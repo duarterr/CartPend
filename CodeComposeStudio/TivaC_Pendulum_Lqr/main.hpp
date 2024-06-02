@@ -151,6 +151,7 @@ extern "C"
 // Encoder - Theta
 #define ENCODER_T_FREQUENCY     200                     // Encoder scan frequency
 #define ENCODER_T_PPR           4000                    // Encoder maximum counter value
+#define ENCODER_T_CAL_CYCLES    10                      // Oscillations required for calibration
 
 // Encoder - X
 #define ENCODER_X_FREQUENCY     200                     // Encoder scan frequency

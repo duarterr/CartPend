@@ -126,7 +126,7 @@ void CartCalibratePos (void)
     CalX.Status = CAL_RUNNING;
 
     // Start stepper - Backwards direction
-    Stepper.Move (-0.2, 0.1);
+    Stepper.Move (-0.2, 1);
 
     // Move until home switch triggers
     while (Stepper.GetEnabled());
@@ -135,7 +135,7 @@ void CartCalibratePos (void)
     EncoderX.SetPos(CalX.Offset);
 
     // Start stepper - Forward direction
-    Stepper.Move (0.2, 0.1);
+    Stepper.Move (0.2, 1);
 
     // Move until end switch triggers
     while (Stepper.GetEnabled())
@@ -180,23 +180,57 @@ void PendulumCalibrateAngle (void)
     while (Cart.Pos > 0);
     Stepper.Stop();
 
+    // Aux variables
+    uint32_t TimeEven[10] = {};
+    uint32_t TimeOdd[10] = {};
+    uint32_t PosEven[10] = {};
+    uint32_t PosOdd[10] = {};
+    float SlopeEven, OffsetEven, SlopeOdd, OffsetOdd;
+    int32_t Offset = 0;
+
+
     // Set reference to a known value
     EncoderT.SetPos(ENCODER_T_PPR/2);
 
-    // Save angle value every time direction changes for 20 times
-    int32_t SumPos = 0;
-    int32_t Offset = 0;
-    int32_t DirectionLast = EncoderT.GetDir();
-    for (CalT.Progress = 0; CalT.Progress < 100; CalT.Progress += 5)
-    {
-        while (EncoderT.GetDir() == DirectionLast);
+    // Wait for angle to be increasing
+    while (EncoderT.GetDir() != 1);
 
-        SumPos += EncoderT.GetPos();
+    int32_t DirectionLast = EncoderT.GetDir();
+
+    for (uint8_t Idx = 0; Idx < ENCODER_T_CAL_CYCLES; Idx++)
+    {
+        // Wait for direction change
+        while (EncoderT.GetDir() == DirectionLast);
         DirectionLast = EncoderT.GetDir();
+
+        // Save time and position
+        PosEven[Idx] = EncoderT.GetPos();;
+        TimeEven[Idx] = SysTickCounter;
+
+        // Increase progress
+        CalT.Progress += (50/ENCODER_T_CAL_CYCLES);
+
+        // Wait for direction change
+        while (EncoderT.GetDir() == DirectionLast);
+        DirectionLast = EncoderT.GetDir();
+
+        // Save time and position
+        PosOdd[Idx] = EncoderT.GetPos();;
+        TimeOdd[Idx] = SysTickCounter;
+
+        // Increase progress
+        CalT.Progress += (50/ENCODER_T_CAL_CYCLES);
     }
 
+    // Calculate the slopes and offsets for both curves
+    Aux::LinearInterpolation(TimeEven, PosEven, ENCODER_T_CAL_CYCLES, &SlopeEven, &OffsetEven);
+    Aux::LinearInterpolation(TimeOdd, PosOdd, ENCODER_T_CAL_CYCLES, &SlopeOdd, &OffsetOdd);
+
+    // Get the time where the curves will intersect
+    float TimeCross = (OffsetOdd - OffsetEven)/(SlopeEven - SlopeOdd);
+
     // Calculate offset of theta encoder in pulses (rounding)
-    Offset = ENCODER_T_PPR/2 - ((float)SumPos / 20 + 0.5);
+    Offset = ENCODER_T_PPR/2 - (SlopeEven * TimeCross + OffsetEven + 0.5);
 
     // Set new reference - Down position is ENCODER_T_PPR/2
     EncoderT.SetPos(EncoderT.GetPos() + Offset + ENCODER_T_PPR/2);
@@ -390,9 +424,9 @@ void DeviceUpdateRgb(void)
     else
     {
         if (Aux::FastFabs(LQR.GetReference(0) - LQR.GetState(0)) < 0.001)
-            Led.SetColor(RGB_GREEN, 0);
+            Led.SetColor(RGB_GREEN, 50);
         else
-            Led.SetColor(RGB_YELLOW, 0);
+            Led.SetColor(RGB_YELLOW, 50);
     }
 }
 
