@@ -1,2 +1,3 @@
-2024/05/28-10:17:37.976 2de0 Creating DB D:\Git\CartPend\CodeComposeStudio\.jxbrowser.userdata\Default\Local Storage\leveldb since it was missing.
-2024/05/28-10:17:38.021 2de0 Reusing MANIFEST D:\Git\CartPend\CodeComposeStudio\.jxbrowser.userdata\Default\Local Storage\leveldb/MANIFEST-000001
+2024/05/29-08:32:41.227 128f4 Reusing MANIFEST D:\Git\CartPend\CodeComposeStudio\.jxbrowser.userdata\Default\Local Storage\leveldb/MANIFEST-000001
+2024/05/29-08:32:41.228 128f4 Recovering log #3
+2024/05/29-08:32:41.228 128f4 Reusing old log D:\Git\CartPend\CodeComposeStudio\.jxbrowser.userdata\Default\Local Storage\leveldb/000003.log 

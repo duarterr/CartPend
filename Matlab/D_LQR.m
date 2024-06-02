@@ -66,42 +66,28 @@ B = [Bc; Bp];
 C = [Cc zeros(1,2); zeros(1,2) Cp];
 D = [Dc; Dp];
 
-%% EXTENDED SYSTEM - NEW STATE w IS THE INTEGTRAL OF xRef - xPos
+%% DISCRETE SYSTEM
 
-A1 = [A(1,:) 0;
-    A(2,:) 0;
-    A(3,:) 0;
-    A(4,:) 0;
-    -1 0 0 0 0];
+% Sampling time
+Ts = 1/200;
 
-B1 = [B; 0];
+[Ad Bd Cd Dd] = ssdata(c2d(ss(A,B,C,D), Ts));
 
 %% LQR DESIGN
 
-% +-: 1 0.1 0.5 0.01 1 % Normal system
+Q = [5 0 0 0;
+    0 1 0 0;
+    0 0 5 0;
+    0 0 0 0.1];
 
-Q = [1 0 0 0;
-    0 0.1 0 0;
-    0 0 0.5 0;
-    0 0 0 0.01];
-
-R = 1;
-
-Q1 = [10 0 0 0 0;
-    0 1 0 0 0;
-    0 0 0.1 0 0;
-    0 0 0 0.5 0;
-    0 0 0 0 0.01];
-
-R1 = 1;
+R = 0.1;
 
 K = lqr(A,B,Q,R)
-K1 = lqr(A1,B1,Q1,R1)
 
 %% PERFORMANCE EVALUATION
 
-Time = 0:.1:50;
-xi = [-0.2; 0; 0; 0];
+Time = 0:Ts:5;
+xi = [0.2; 0; -0.2; 0];
 ref = [0; 0; 0; 0];
 
 % Solve non linear model
@@ -118,7 +104,7 @@ Accel = gradient(PosDotM(:)) ./ gradient(Time(:));
 
 Time_Duration = toc;
 fprintf ("Calculations took %.2f seconds \n\n", Time_Duration);
-fprintf (".K = {%.6f, %.6f, %.6f, %.6f}\n", K(1), K(2), K(3), K(4));
+fprintf (".K = {%.6f, %.6f, %.6f, %.6f}, \\ \n", K(1), K(2), K(3), K(4));
 
 %% PLOTS
 
@@ -165,7 +151,7 @@ title('Pendulum');
 % Cart animation
 subplot(3,2,[2 4 6]);
 for k=1:10:length(Time)
-    PendCartDraw([PosM(k) PosDotM(k) ThetaM(k) ThetaDotM(k)], Time(k), 'Response');
+    PendCartDraw([PosM(k) ThetaM(k)], Time(k), 'Response');
     %pause(Time(k+1)-Time(k));
 end
 

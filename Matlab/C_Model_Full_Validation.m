@@ -17,6 +17,14 @@ OptSave = SavePopUp;
 % Start counting time
 tic;
 
+%%
+
+STEPPER_STEPS_REV = 200;
+STEPPER_MICROSTEPS = 32;
+STEPPER_PPR = (STEPPER_STEPS_REV*STEPPER_MICROSTEPS);
+STEPPER_PD = 0.0136;
+STEPPER_KV = (STEPPER_PPR/(pi*STEPPER_PD));
+
 %% PENDULUM DATA
 
 % Import data
@@ -52,7 +60,8 @@ Theta = Exp.Theta;
 ThetaDot = Exp.ThetaDot;
 ThetaDotCalc = gradient(Theta(:)) ./ gradient(Time(:)); 
 
-PPSCalc = cumtrapz(Time,Accel)*160000;
+AccelCalc = gradient(CurrentPPS(:) / STEPPER_KV) ./ gradient(Time(:));
+PPSCalc = cumtrapz(Time,Accel)*STEPPER_KV;
 
 % Initial conditions
 xi = [Pos(1); PosDot(1); Theta(1); ThetaDot(1)];
@@ -79,13 +88,15 @@ clf(1);
 
 % Input
 subplot(321);
-plot(Time, Accel, 'DisplayName', 'Input');
+plot(Time ,Accel, 'DisplayName', 'Experimental');
+hold on;
+plot(Time, AccelCalc, 'DisplayName', 'Model');
 grid on;
 xlim([0 Time(end)]);
 xlabel('Time [s]');
 ylabel('Acceleration [m/s^2]');
 title('Input');
-%legend;
+legend;
 
 % Position
 subplot(323);

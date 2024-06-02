@@ -15,64 +15,9 @@
 // Application defines
 #include "main.hpp"
 
-// LCD functions
-#include "Lcd_TivaC.hpp"
-
-// Button functions
-#include "Button_TivaC.hpp"
-
-// UART functions
-#include "Uart_TivaC.hpp"
-
-// Encoder functions
-#include "Encoder_TivaC.hpp"
-
-// RGB LED functions
-#include "Rgb_TivaC.hpp"
-
-// Auxiliary functions
-#include "Aux_Functions.hpp"
-
 // ------------------------------------------------------------------------------------------------------- //
 // Functions Prototypes
 // ------------------------------------------------------------------------------------------------------- //
-
-// Start stepper PWM generator
-void _StepperStartPwm (void);
-
-// Stop stepper PWM generator
-void _StepperStopPwm (void);
-
-// Set stepper PWM frequency and duty
-void _StepperChangePWM (int32_t NewPPS);
-
-
-// Move stepper with speed ramp - Constant acceleration
-// Direction is determined based on current status and acceleration value
-void StepperMoveAccel (uint32_t FinalVelocity, float Acceleration);
-
-// Start stepper at constant speed - No velocity control
-void StepperMoveNoAccel (bool Direction, uint32_t Velocity);
-
-// Stop stepper
-void StepperStop (void);
-
-// Stepper velocity control
-void StepperUpdateMovement (void);
-
-// Stepper stall detection
-void StepperDetectStall (void);
-
-// Check if movement is possible in a given direction
-bool StepperCanMove(bool Direction);
-
-
-
-// Calculate LQR control action value and stores in Lqr struct
-void LqrCompute (void);
-
-
-
 
 // Send device info via UART
 void DeviceUpdateUart(void);
@@ -84,16 +29,16 @@ void DeviceUpdateLcd(void);
 void DeviceUpdateRgb(void);
 
 // Button 1 event handler
-void DeviceUpdateButton1 (button_event_data_t *EventData);
+void DeviceUpdateButton1 (void);
 
 // Button 2 event handler
-void DeviceUpdateButton2 (button_event_data_t *EventData);
+void DeviceUpdateButton2 (void);
 
 // SysTick interrupt service routine
 void IsrSysTick (void);
 
 // ------------------------------------------------------------------------------------------------------- //
-// Variables
+// Objects
 // ------------------------------------------------------------------------------------------------------- //
 
 // Display object - From Lcd_TivaC class
@@ -111,12 +56,15 @@ Encoder EncoderT, EncoderX;
 // RGB LED object - From Rgb_TivaC class
 Rgb Led;
 
+// Stepper object - From Stepper_TivaC class
+Stepper Stepper;
 
-// CPU clock - Hz
-uint32_t cpuClock = 0;
+// LQR object - From LQR_TivaC class
+Lqr LQR;
 
-// Systick interrupt counter
-volatile uint32_t SysTickCounter = 0;
+// ------------------------------------------------------------------------------------------------------- //
+// Variables
+// ------------------------------------------------------------------------------------------------------- //
 
 // Cart-related variables
 volatile cart_t Cart = cart_t_default;
@@ -124,405 +72,36 @@ volatile cart_t Cart = cart_t_default;
 // Pendulum-related variables
 volatile pendulum_t Pendulum = pendulum_t_default;
 
-// Stepper-related variables
-volatile stepper_t Stepper = stepper_t_default;
-
 // Calibration variables
 volatile calibration_t CalT = {.Status = CAL_PENDING, .Progress = 0, .Offset = 0, .Max = ENCODER_T_PPR};
 volatile calibration_t CalX = {.Status = CAL_PENDING, .Progress = 0, .Offset = 1000, .Max = ENCODER_X_PPR};
 
-// LQR
-lqr_t Lqr = lqr_t_default;
-
-uint32_t PPS = 50000;
-float Accel = 0.1;
-
-// ------------------------------------------------------------------------------------------------------- //
-// Calculate LQR control action value and stores in Lqr struct
-// ------------------------------------------------------------------------------------------------------- //
-
-void LqrCompute (void)
-{
-    char Idx = 0;
-
-    // Define current state vector
-    Lqr.States[0] = Cart.Pos;
-    Lqr.States[1] = Cart.Vel;
-    Lqr.States[2] = Pendulum.Pos;
-    Lqr.States[3] = Pendulum.Vel;
-    Lqr.States[4] = Lqr.Ref[0] - Cart.Pos;
-
-    // Calculate state error
-    for (Idx = 0; Idx < 5; Idx++)
-        Lqr.E_now[Idx] = Lqr.Ref[Idx] - Lqr.States[Idx];
-
-    // Calculate U_nxt
-    Lqr.U_nxt = 0;
-
-    for (Idx = 0; Idx < 5; Idx++)
-        Lqr.U_nxt += Lqr.K[Idx]*Lqr.E_now[Idx];
-}
-
-/* -------------------------------------------------------------------------------------------------------------------- */
-// Set stepper direction
-/* -------------------------------------------------------------------------------------------------------------------- */
-
-void StepperSetDirection (bool NewDirection)
-{
-    Stepper.Dir = NewDirection;
-    GPIOPinWrite (STEPPER_GPIO_BASE, STEPPER_PIN_DIR, NewDirection * 0xFF);
-}
-
-/* -------------------------------------------------------------------------------------------------------------------- */
-// Set stepper enable/disable status
-/* -------------------------------------------------------------------------------------------------------------------- */
-
-void StepperSetEnable (bool NewEnable)
-{
-    Stepper.Enabled = NewEnable;
-    GPIOPinWrite (STEPPER_GPIO_BASE, STEPPER_PIN_EN, !NewEnable * 0xFF);
-}
-
-// ------------------------------------------------------------------------------------------------------- //
-// Check if movement is possible in a given direction
-// ------------------------------------------------------------------------------------------------------- //
-
-bool StepperCanMove(bool Direction)
-{
-    // One of the limit switches is pressed and stepper is trying to move in the same direction
-    return !((GPIOPinRead(SWITCH_GPIO_BASE, SWITCH_PIN_START) && (Direction == 0))
-            || (GPIOPinRead(SWITCH_GPIO_BASE, SWITCH_PIN_END) && (Direction == 1)));
-}
-
-// ------------------------------------------------------------------------------------------------------- //
-// Stepper stall detection
-// ------------------------------------------------------------------------------------------------------- //
-
-void StepperDetectStall (void)
-{
-    if (Stepper.Enabled)
-    {
-        static uint32_t LastEncoderCounter = 0;
-
-        // Cart moved too little and stepper has PWM
-        if ((LastEncoderCounter == EncoderX.GetPos()) && (Stepper.CurrentPPS == Stepper.TargetPPS))
-            StepperStop();
-
-        LastEncoderCounter = EncoderX.GetPos();
-    }
-}
-
-// ------------------------------------------------------------------------------------------------------- //
-// Stepper stall detection
-// ------------------------------------------------------------------------------------------------------- //
-
-void _StepperChangePWM (void)
-{
-    // Desired PWM frequency is high enough for high speed PWM clock
-    if ((Stepper.CurrentPPS > 3000) && (Stepper.PwmClock != cpuClock))
-    {
-        // Disable PWM clock division
-        SysCtlPWMClockSet(SYSCTL_PWMDIV_1);
-        Stepper.PwmClock = cpuClock;
-    }
-
-    // Desired PWM frequency is too low for current PWM clock
-    else if ((Stepper.CurrentPPS < 2000) && (Stepper.PwmClock == cpuClock))
-    {
-        // Reduce PWM clock
-        SysCtlPWMClockSet(STEPPER_PWM_DIV_CFG);
-        Stepper.PwmClock = cpuClock / STEPPER_PWM_DIV;
-    }
-
-    // Define PWM period (expressed in clock ticks)
-    Stepper.PwmPeriod = (Stepper.PwmClock/Stepper.CurrentPPS) - 1;
-
-    // Change PWM frequency and duty cycle (only if necessary)
-    if (Stepper.PwmPeriod != PWMGenPeriodGet (STEPPER_PWM_BASE, STEPPER_PWM_GEN))
-    {
-        PWMGenPeriodSet (STEPPER_PWM_BASE, STEPPER_PWM_GEN, Stepper.PwmPeriod);
-        PWMPulseWidthSet (STEPPER_PWM_BASE, STEPPER_PWM_OUT, Stepper.PwmPeriod >> 1);
-    }
-}
-
-// ------------------------------------------------------------------------------------------------------- //
-// Stepper velocity control
-// ------------------------------------------------------------------------------------------------------- //
-
-void StepperUpdateMovement (void)
-{
-    int32_t NewPPS = 0;
-
-    // Stepper is disabled - Shouldn't enter here
-    if (!Stepper.Enabled)
-    {
-        // Stop movement
-        StepperStop();
-        return;
-    }
-
-    // Acceleration is on
-    if (Stepper.AccEnabled)
-    {
-        // Negative acceleration
-        if (Stepper.DeltaPPS < 0)
-        {
-            // Is going forwards
-            if (Stepper.Dir == 1)
-            {
-                // Decrease PPS
-                NewPPS = Stepper.CurrentPPS + Stepper.DeltaPPS;
-
-                // Reached minimum speed
-                if (Stepper.CurrentPPS <= STEPPER_PPS_MIN)
-                    // Invert direction
-                    StepperSetDirection(!Stepper.Dir);
-
-                // Reset speed to avoid going bellow minimum
-                if (NewPPS < STEPPER_PPS_MIN)
-                    NewPPS = STEPPER_PPS_MIN;
-            }
-
-            // Is going backwards
-            else if (Stepper.Dir == 0)
-            {
-                // Increase PPS
-                NewPPS = Stepper.CurrentPPS - Stepper.DeltaPPS;
-
-                // Reached target speed
-                if (NewPPS > Stepper.TargetPPS)
-                    NewPPS = Stepper.TargetPPS;
-            }
-        }
-
-        // Positive acceleration
-        else if (Stepper.DeltaPPS > 0)
-        {
-            // Is going forwards
-            if (Stepper.Dir == 1)
-            {
-                // Increase PPS
-                NewPPS = Stepper.CurrentPPS + Stepper.DeltaPPS;
-
-                // Reached target speed
-                if (NewPPS > Stepper.TargetPPS)
-                    NewPPS = Stepper.TargetPPS;
-            }
-
-            // Is going backwards
-            else if (Stepper.Dir == 0)
-            {
-                // Decrease PPS
-                NewPPS = Stepper.CurrentPPS - Stepper.DeltaPPS;
-
-                // Reached minimum speed
-                if (Stepper.CurrentPPS <= STEPPER_PPS_MIN)
-                    // Invert direction
-                    StepperSetDirection(!Stepper.Dir);
-
-                // Reset speed to avoid going bellow minimum
-                if (NewPPS < STEPPER_PPS_MIN)
-                    NewPPS = STEPPER_PPS_MIN;
-            }
-        }
-
-        // No acceleration
-        else
-            NewPPS = Stepper.CurrentPPS;
-    }
-
-    // Acceleration is off
-    else if (NewPPS != Stepper.TargetPPS)
-        NewPPS = Stepper.TargetPPS;
-
-    // Cart is close to end limits - Reduce velocity
-    if (((Cart.Pos > 0.19) && (Stepper.Dir == 1)) || ((Cart.Pos < -0.19) && (Stepper.Dir == 0)))
-    {
-        // Limit speed
-        NewPPS = STEPPER_PPS_CAL;
-    }
-
-    // New velocity is non zero
-    if (NewPPS != 0)
-    {
-        // PWM frequency needs to be changed
-        Stepper.CurrentPPS = NewPPS;
-
-        _StepperChangePWM ();
-    }
-}
-
-// ------------------------------------------------------------------------------------------------------- //
-// Move stepper with speed ramp - Constant acceleration
-// Direction is determined based on current status and acceleration value
-// ------------------------------------------------------------------------------------------------------- //
-
-void StepperMoveAccel (uint32_t FinalVelocity, float Acceleration)
-{
-    // Get current direction
-    bool Direction = Stepper.Dir;
-
-    // Stepper is stopped
-    if (!Stepper.Enabled)
-    {
-        // Start going forward
-        if (Acceleration > 0)
-            Direction = 1;
-
-        // Start going backward
-        else if (Acceleration < 0)
-            Direction = 0;
-
-        // Define initial speed
-        Stepper.CurrentPPS = STEPPER_PPS_MIN;
-
-        _StepperChangePWM ();
-    }
-
-    // Cannot move in desired direction
-    if (!StepperCanMove(Direction))
-    {
-        StepperStop();
-        return;
-    }
-
-    // Velocity saturation
-    if ((CalX.Status != CAL_DONE) && (FinalVelocity > STEPPER_PPS_CAL))
-        FinalVelocity = STEPPER_PPS_CAL;
-    else if (FinalVelocity > STEPPER_PPS_MAX)
-        FinalVelocity = STEPPER_PPS_MAX;
-    else if(FinalVelocity < STEPPER_PPS_MIN)
-        FinalVelocity = STEPPER_PPS_MIN;
-
-    // Acceleration saturation
-    if (Acceleration > STEPPER_ACC_MAX)
-        Acceleration = STEPPER_ACC_MAX;
-    else if (Acceleration < STEPPER_ACC_MIN)
-        Acceleration = STEPPER_ACC_MIN;
-
-    // Set direction and enable pins
-    StepperSetDirection(Direction);
-    StepperSetEnable(true);
-
-    // Set velocity and acceleration
-    Stepper.TargetPPS = FinalVelocity;
-    Stepper.AccValue = Acceleration;
-    Stepper.AccEnabled = Acceleration == 0 ? 0 : 1;
-    Stepper.DeltaPPS = Stepper.AccValue*STEPPER_KV_PPS/TIMER_FREQUENCY;
-
-    // TODO: Is there a better way?
-    if (Stepper.DeltaPPS == 0)
-        return;
-
-    // Start PWM
-    _StepperStartPwm ();
-}
-
-// ------------------------------------------------------------------------------------------------------- //
-// Start stepper at constant speed - No velocity control
-// ------------------------------------------------------------------------------------------------------- //
-
-void StepperMoveNoAccel (bool Direction, uint32_t Velocity)
-{
-    // Cannot move in desired direction
-    if (!StepperCanMove(Direction))
-    {
-        StepperStop();
-        return;
-    }
-
-    // Velocity saturation
-    if (Velocity == 0)
-    {
-        // No need to go beyond
-        StepperStop();
-        return;
-    }
-    else if (Velocity > STEPPER_PPS_MAX)
-        Velocity = STEPPER_PPS_MAX;
-    else if(Velocity < STEPPER_PPS_MIN)
-        Velocity = STEPPER_PPS_MIN;
-
-    // Direction change with motor enabled. Stop it first
-    if (Stepper.Enabled && (Direction != Stepper.Dir))
-        StepperStop ();
-
-    // Set direction and enable pins
-    StepperSetDirection(Direction);
-    StepperSetEnable(true);
-
-    // Set velocity and acceleration
-    Stepper.TargetPPS = Velocity;
-    Stepper.AccValue = 0;
-    Stepper.AccEnabled = 0;
-
-    // Start PWM
-    _StepperStartPwm ();
-}
-
-/* -------------------------------------------------------------------------------------------------------------------- */
-// Start stepper PWM generator
-/* -------------------------------------------------------------------------------------------------------------------- */
-
-void _StepperStartPwm (void)
-{
-    // Turn on the output pins
-    PWMOutputState (STEPPER_PWM_BASE, STEPPER_PWM_OUT_BIT , true);
-
-    // Start PWM
-    PWMGenEnable (STEPPER_PWM_BASE, STEPPER_PWM_GEN);
-}
-
-/* -------------------------------------------------------------------------------------------------------------------- */
-// Stop stepper PWM generator
-/* -------------------------------------------------------------------------------------------------------------------- */
-
-void _StepperStopPwm (void)
-{
-    // Stop PWM
-    PWMGenDisable (STEPPER_PWM_BASE, STEPPER_PWM_GEN);
-
-    // Clear interrupt flag
-    PWMGenIntClear(STEPPER_PWM_BASE, STEPPER_PWM_GEN, PWM_INT_CNT_ZERO);
-
-    // Turn off the output pins
-    PWMOutputState (STEPPER_PWM_BASE, STEPPER_PWM_OUT_BIT , false);
-}
-
-// ------------------------------------------------------------------------------------------------------- //
-// Stop stepper
-// ------------------------------------------------------------------------------------------------------- //
-
-void StepperStop (void)
-{
-    // Reset enable pin
-    StepperSetEnable(false);
-
-    // Stop PWM
-    _StepperStopPwm ();
-
-    // Reset velocity and acceleration
-    Stepper.CurrentPPS = STEPPER_PPS_MIN;
-    Stepper.AccValue = 0;
-    Stepper.DeltaPPS = 0;
-}
-
-// ------------------------------------------------------------------------------------------------------- //
-// Stepper PWM zero count interrupt service routine
-// ------------------------------------------------------------------------------------------------------- //
-
-void IsrPwmZero(void)
-{
-    // Cannot move anymore in current direction
-    if (!StepperCanMove(Stepper.Dir))
-    {
-        StepperStop();
-        return;
-    }
-
-    // Clear interrupt flag
-    PWMGenIntClear(STEPPER_PWM_BASE, STEPPER_PWM_GEN, PWM_INT_CNT_ZERO);
-}
+volatile float PosRefShaddow = 0;
+
+
+// Global counters
+volatile uint32_t SysTickCounter = 0;
+volatile uint32_t ControlCounter = 0;
+volatile uint32_t UartCounter = 0;
+volatile uint32_t LcdCounter = 0;
+volatile uint32_t RgbCounter = 0;
+volatile uint32_t ButtonCounter = 0;
+volatile uint32_t EncoderTCounter = 0;
+volatile uint32_t EncoderXCounter = 0;
+
+// Intervals
+const uint32_t ControlInterval = TIMER_FREQUENCY / CONTROL_LOOP_FREQUENCY;
+const uint32_t UartInterval = TIMER_FREQUENCY / UART_REFRESH_FREQUENCY;
+const uint32_t LcdInterval = TIMER_FREQUENCY / LCD_REFRESH_FREQUENCY;
+const uint32_t RgbInterval = TIMER_FREQUENCY / RGB_REFRESH_FREQUENCY;
+const uint32_t ButtonInterval = TIMER_FREQUENCY / BUTTON_SCAN_FREQUENCY;
+const uint32_t EncoderTInterval = TIMER_FREQUENCY / ENCODER_T_FREQUENCY;
+const uint32_t EncoderXInterval = TIMER_FREQUENCY / ENCODER_X_FREQUENCY;
+
+// TODO: REMOVE
+float Vel = 0.1;
+float Acc = 0.1;
+stepper_status_t StepperStatus = stepper_status_t_default;
 
 // ------------------------------------------------------------------------------------------------------- //
 // Update cart state based on encoder readings
@@ -530,7 +109,7 @@ void IsrPwmZero(void)
 
 void CartUpdateState (void)
 {
-    // Calculate cart absolute position - Remove 1000 added during calibration
+    // Calculate cart absolute position - Remove offset added during calibration
     Cart.Pos = ((float)X_VALUE_TOTAL_M/CalX.Max)*((int32_t)EncoderX.GetPos() - CalX.Offset) - X_VALUE_ABS_M;
 
     // Calculate cart velocity
@@ -546,22 +125,20 @@ void CartCalibratePos (void)
     CalX.Progress = 0;
     CalX.Status = CAL_RUNNING;
 
-    // Start stepper
-    //StepperMoveAccel (STEPPER_PPS_CAL, -0.1);
-    StepperMoveNoAccel (0, STEPPER_PPS_CAL);
+    // Start stepper - Backwards direction
+    Stepper.Move (-0.2, 0.1);
 
     // Move until home switch triggers
-    while (Stepper.Enabled);
+    while (Stepper.GetEnabled());
 
-    // Set encoder counter - Added offset because cart can move past limit switch trigger point
+    // Set encoder counter - Add offset because cart can move past limit switch trigger point
     EncoderX.SetPos(CalX.Offset);
 
-    // Start stepper
-    //StepperMoveAccel (STEPPER_PPS_CAL, 0.1);
-    StepperMoveNoAccel (1, STEPPER_PPS_CAL);
+    // Start stepper - Forward direction
+    Stepper.Move (0.2, 0.1);
 
     // Move until end switch triggers
-    while (Stepper.Enabled)
+    while (Stepper.GetEnabled())
         CalX.Progress = (uint32_t)(EncoderX.GetPos() * 200)/ENCODER_X_PPR;
 
     // Define encoder maximum counter value - Without offset
@@ -592,31 +169,42 @@ void PendulumCalibrateAngle (void)
     CalT.Progress = 0;
     CalT.Status = CAL_RUNNING;
 
-    uint32_t PositionLast = 5000;
-    uint32_t Counter = 0;
+    // Wait until X encoder updates
+    float LastSysTick = SysTickCounter;
+    while (SysTickCounter - LastSysTick < EncoderXInterval);
 
-    // Wait for pendulum to stabilise in the downward position
-    while (Counter < 100)
+    // Start stepper - Backwards direction
+    Stepper.Move (-0.5, 1);
+
+    // Move to X-axis 0
+    while (Cart.Pos > 0);
+    Stepper.Stop();
+
+    // Set reference to a known value
+    EncoderT.SetPos(ENCODER_T_PPR/2);
+
+    // Save angle value every time direction changes for 20 times
+    int32_t SumPos = 0;
+    int32_t Offset = 0;
+    int32_t DirectionLast = EncoderT.GetDir();
+    for (CalT.Progress = 0; CalT.Progress < 100; CalT.Progress += 5)
     {
-        if (EncoderT.GetVel() != 0)
-            Counter = 0;
-        else if (PositionLast == EncoderT.GetPos())
-            Counter++;
-        else
-            Counter = 0;
+        while (EncoderT.GetDir() == DirectionLast);
 
-        CalT.Progress = Counter;
-
-        PositionLast = EncoderT.GetPos();
-        SysCtlDelay(100000);
+        SumPos += EncoderT.GetPos();
+        DirectionLast = EncoderT.GetDir();
     }
 
-    // Set encoder counter
-    EncoderT.SetPos(0);
+    // Calculate offset of theta encoder in pulses (rounding)
+    Offset = ENCODER_T_PPR/2 - ((float)SumPos / 20 + 0.5);
+
+    // Set new reference - Down position is ENCODER_T_PPR/2
+    EncoderT.SetPos(EncoderT.GetPos() + Offset + ENCODER_T_PPR/2);
 
     // Define encoder maximum counter value
     CalT.Max = ENCODER_T_PPR;
 
+    CalT.Progress = 100;
     CalT.Status = CAL_DONE;
 }
 
@@ -635,14 +223,17 @@ void DeviceUpdateUart(void)
         Serial.SendString (Aux_String);
         Serial.SendString (";");
 
-        Aux::F2Str(Stepper.AccValue, Aux_String, 6);
+        float AccNow = 0;
+        if (Stepper.GetTargetVel() > Stepper.GetCurrentVel())
+            AccNow = Stepper.GetCurrentAcc();
+        else if (Stepper.GetTargetVel() < Stepper.GetCurrentVel())
+            AccNow = -Stepper.GetCurrentAcc();
+        Aux::F2Str(AccNow, Aux_String, 6);
+
         Serial.SendString (Aux_String);
         Serial.SendString (";");
 
-        if (Stepper.Dir == 0)
-            ltoa (-1.0 * Stepper.CurrentPPS * Stepper.Enabled, Aux_String, 10);
-        else
-            ltoa (Stepper.CurrentPPS * Stepper.Enabled, Aux_String, 10);
+        ltoa ((Stepper.GetDir() == 1 ? Stepper.GetPwmFrequency() : -Stepper.GetPwmFrequency()), Aux_String, 10);
 
         Serial.SendString (Aux_String);
         Serial.SendString (";");
@@ -727,7 +318,7 @@ void DeviceUpdateLcd(void)
 
         Display.Goto(2, 0);
         Display.WriteString("xR:", LCD_FONT_SMALL, LCD_PIXEL_ON);
-        NumberToWrite = Lqr.Ref[0];
+        NumberToWrite = LQR.GetReference(0);
         if (NumberToWrite >= 0)
             Display.WriteChar(' ', LCD_FONT_SMALL, LCD_PIXEL_ON);
         Display.WriteFloat(NumberToWrite, 6, LCD_FONT_SMALL, LCD_PIXEL_ON);
@@ -771,12 +362,12 @@ void DeviceUpdateLcd(void)
         Display.DrawFilledRectangle(xP - 2, 11, xP + 2, 15, LCD_PIXEL_ON);
 
         // Shaddow reference mark
-        xP = (uint8_t)Aux::Map (Lqr.Ref_Shaddow, -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
+        xP = (uint8_t)Aux::Map (PosRefShaddow, -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
         Display.DrawPixel(xP, 12, LCD_PIXEL_XOR);
         Display.DrawPixel(xP, 13, LCD_PIXEL_OFF);
 
         // Reference mark
-        xP = (uint8_t)Aux::Map (Lqr.Ref[0], -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
+        xP = (uint8_t)Aux::Map (LQR.GetReference(0), -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
         Display.DrawPixel(xP, 14, LCD_PIXEL_XOR);
         Display.DrawPixel(xP, 13, LCD_PIXEL_OFF);
     }
@@ -798,7 +389,7 @@ void DeviceUpdateRgb(void)
     // Run mode
     else
     {
-        if (fabs(Lqr.E_now[0]) < 0.001)
+        if (Aux::FastFabs(LQR.GetReference(0) - LQR.GetState(0)) < 0.001)
             Led.SetColor(RGB_GREEN, 0);
         else
             Led.SetColor(RGB_YELLOW, 0);
@@ -809,48 +400,58 @@ void DeviceUpdateRgb(void)
 // Button 1 event handler
 // ------------------------------------------------------------------------------------------------------- //
 
-void DeviceUpdateButton1 (button_event_data_t *EventData)
+void DeviceUpdateButton1 (void)
 {
-     // Button short clicks
-     if (EventData->EventCode == BUTTON_SHORT_CLICK)
-     {
-         // Single click
-         if (EventData->Counter == 1)
-         {
-             Lqr.Ref_Shaddow -= 0.025;
+    button_event_data_t EventData;
 
-             if (Lqr.Ref_Shaddow < -0.15)
-                 Lqr.Ref_Shaddow = -0.15;
-         }
+    if (Button1.ScanEvent (&EventData))
+    {
+        // Button short clicks
+        if (EventData.EventCode == BUTTON_SHORT_CLICK)
+        {
+            // Single click
+            if (EventData.Counter == 1)
+            {
+                PosRefShaddow -= 0.025;
 
-         // Double click
-         else if (EventData->Counter == 2)
-             Lqr.Ref[0] = Lqr.Ref_Shaddow;
-     }
+                if (PosRefShaddow < -0.15)
+                PosRefShaddow = -0.15;
+            }
+
+            // Double click
+            else if (EventData.Counter == 2)
+                LQR.SetReference(0, PosRefShaddow);
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------------- //
 // Button 2 event handler
 // ------------------------------------------------------------------------------------------------------- //
 
-void DeviceUpdateButton2 (button_event_data_t *EventData)
+void DeviceUpdateButton2 (void)
 {
-     // Button short clicks
-     if (EventData->EventCode == BUTTON_SHORT_CLICK)
-     {
-         // Single click
-         if (EventData->Counter == 1)
-         {
-             Lqr.Ref_Shaddow += 0.025;
+    button_event_data_t EventData;
 
-             if (Lqr.Ref_Shaddow > 0.15)
-                 Lqr.Ref_Shaddow = 0.15;
-         }
+    if (Button2.ScanEvent (&EventData))
+    {
+        // Button short clicks
+        if (EventData.EventCode == BUTTON_SHORT_CLICK)
+        {
+            // Single click
+            if (EventData.Counter == 1)
+            {
+                PosRefShaddow += 0.025;
 
-         // Double click
-         else if (EventData->Counter == 2)
-             Lqr.Ref[0] = Lqr.Ref_Shaddow;
-     }
+                if (PosRefShaddow > 0.15)
+                    PosRefShaddow = 0.15;
+            }
+
+            // Double click
+            else if (EventData.Counter == 2)
+                LQR.SetReference(0, PosRefShaddow);
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -860,61 +461,83 @@ void DeviceUpdateButton2 (button_event_data_t *EventData)
 void IsrSysTick (void)
 {
     // Pendulum state update
-    if ((SysTickCounter % (TIMER_FREQUENCY / ENCODER_T_FREQUENCY)) == 0)
-        PendulumUpdateState ();
+    if (++EncoderTCounter >= EncoderTInterval)
+    {
+        PendulumUpdateState();
+        EncoderTCounter = 0;
+    }
 
     // Cart state update
-    if ((SysTickCounter % (TIMER_FREQUENCY / ENCODER_X_FREQUENCY)) == 0)
+    if (++EncoderXCounter >= EncoderXInterval)
     {
-        CartUpdateState ();
+        CartUpdateState();
 
         // Check for stalls - Done here because we need updated cart data
-        StepperDetectStall ();
+        if (Stepper.CheckForStall(EncoderX.GetPos()))
+            Stepper.Stop();
+
+        EncoderXCounter = 0;
     }
 
     // Control loop
-    if ((CalX.Status == CAL_DONE) && (CalT.Status == CAL_DONE) &&  ((SysTickCounter % (TIMER_FREQUENCY / CONTROL_LOOP_FREQUENCY)) == 0))
+    if ((++ControlCounter >= ControlInterval) && ((CalX.Status == CAL_DONE) && (CalT.Status == CAL_DONE)))
     {
         // Code for control loops
-        if (fabs(Pendulum.Pos) < 0.2)
+        if (Aux::FastFabs(Pendulum.Pos) < 0.2)
         {
-            LqrCompute ();
+            LQR.SetState(0, Cart.Pos);
+            LQR.SetState(1, Cart.Vel);
+            LQR.SetState(2, Pendulum.Pos);
+            LQR.SetState(3, Pendulum.Vel);
 
-            if (Lqr.U_nxt > STEPPER_ACC_MAX)
-                Lqr.U_nxt = STEPPER_ACC_MAX;
-            else if (Lqr.U_nxt < STEPPER_ACC_MIN)
-                Lqr.U_nxt = STEPPER_ACC_MIN;
+            float Unxt = LQR.Compute ();
 
-            StepperMoveAccel(STEPPER_PPS_MAX, Lqr.U_nxt);
+            if (Unxt > STEPPER_ACC_MAX)
+                Unxt = STEPPER_ACC_MAX;
+            else if (Unxt < -STEPPER_ACC_MAX)
+                Unxt = -STEPPER_ACC_MAX;
+
+            float FinalVelocity = (Unxt < 0 ? -STEPPER_VEL_MAX : STEPPER_VEL_MAX);
+            float Acceleration = Aux::FastFabs(Unxt);
+
+            Stepper.Move(FinalVelocity, Acceleration);
         }
 
         else
-            StepperStop();
+            Stepper.Stop();
+
+        ControlCounter = 0;
     }
 
     // UART update
-    if ((SysTickCounter % (TIMER_FREQUENCY / UART_REFRESH_FREQUENCY)) == 0)
-        DeviceUpdateUart ();
+    if (++UartCounter >= UartInterval)
+    {
+        DeviceUpdateUart();
+        UartCounter = 0;
+    }
 
     // LCD update
-    if ((SysTickCounter % (TIMER_FREQUENCY / LCD_REFRESH_FREQUENCY)) == 0)
+    if (++LcdCounter >= LcdInterval)
+    {
         DeviceUpdateLcd();
+        LcdCounter = 0;
+    }
 
     // RGB update
-    if ((SysTickCounter % (TIMER_FREQUENCY / RGB_REFRESH_FREQUENCY)) == 0)
+    if (++RgbCounter >= RgbInterval)
+    {
         DeviceUpdateRgb();
+        RgbCounter = 0;
+    }
 
-    // PWM update
-    StepperUpdateMovement();
+    // Buttons update
+    if (++ButtonCounter >= ButtonInterval)
+    {
+        DeviceUpdateButton1();
+        DeviceUpdateButton2();
 
-    // Button 1 scan
-    button_event_data_t EventData;
-    if (Button1.ScanEvent (&EventData))
-        DeviceUpdateButton1(&EventData);
-
-    // Button 2 scan
-    if (Button2.ScanEvent (&EventData))
-        DeviceUpdateButton2(&EventData);
+        ButtonCounter = 0;
+    }
 
     // Increase counter (or reset back to zero)
     SysTickCounter = SysTickCounter == 4294967295 ? 0 : (SysTickCounter + 1);
@@ -933,9 +556,6 @@ void main (void)
     // Configure clock - 80 MHz - 200 MHz (PLL) / 2.5
     SysCtlClockSet (SYSCTL_SYSDIV_2_5 | SYSCTL_USE_PLL | SYSCTL_XTAL_16MHZ | SYSCTL_OSC_MAIN);
 
-    // Get CPU clock
-    cpuClock = SysCtlClockGet();
-
     // Master interrupt enable API for all interrupts
     IntMasterEnable();
 
@@ -947,28 +567,6 @@ void main (void)
     // LCD configuration
     // --------------------------------------------------------------------------------------------------- //
 
-    // Define LCD configuration parameters
-    lcd_config_t Lcd_Config;
-    Lcd_Config.Periph.Ssi = LCD_SSI_PERIPH;
-    Lcd_Config.Periph.Sclk = LCD_SCLK_PERIPH;
-    Lcd_Config.Periph.Dn = LCD_DN_PERIPH;
-    Lcd_Config.Periph.Sce = LCD_SCE_PERIPH;
-    Lcd_Config.Periph.Dc = LCD_DC_PERIPH;
-    Lcd_Config.Periph.Bkl = LCD_BKL_PERIPH;
-    Lcd_Config.Base.Ssi = LCD_SSI_BASE;
-    Lcd_Config.Base.Sclk = LCD_SCLK_BASE;
-    Lcd_Config.Base.Dn = LCD_DN_BASE;
-    Lcd_Config.Base.Sce = LCD_SCE_BASE;
-    Lcd_Config.Base.Dc = LCD_DC_BASE;
-    Lcd_Config.Base.Bkl = LCD_BKL_BASE;
-    Lcd_Config.PinMux.Sclk = LCD_SCLK_CFG;
-    Lcd_Config.PinMux.Dn = LCD_DN_CFG;
-    Lcd_Config.Pin.Sclk = LCD_SCLK_PIN;
-    Lcd_Config.Pin.Dn = LCD_DN_PIN;
-    Lcd_Config.Pin.Sce = LCD_SCE_PIN;
-    Lcd_Config.Pin.Dc = LCD_DC_PIN;
-    Lcd_Config.Pin.Bkl = LCD_BKL_PIN;
-
     // Initialize LCD display
     Display.Init (&Lcd_Config);
 
@@ -979,43 +577,15 @@ void main (void)
     // Buttons configuration
     // --------------------------------------------------------------------------------------------------- //
 
-    // Define button 1 parameters
-    button_config_t Button_Config;
-    Button_Config.Hardware.Periph = BUTTON_GPIO_PERIPH;
-    Button_Config.Hardware.Base = BUTTON_GPIO_BASE;
-    Button_Config.Hardware.Pin = BUTTON_PIN_1;
-    Button_Config.Params.Interval = BUTTON_SCAN_INTERVAL;
-    Button_Config.Params.DeadTime = BUTTON_DEAD_TIME;
-    Button_Config.Params.Window = BUTTON_WINDOW;
-    Button_Config.Params.LongClickTimeout = BUTTON_LONG_TIMEOUT;
-
     // Initialize button 1
-    Button1.Init(&Button_Config);
-
-    // Define button 2 parameters
-    Button_Config.Hardware.Pin = BUTTON_PIN_2;
+    Button1.Init(&Button1_Config);
 
     // Initialize button 2
-    Button2.Init(&Button_Config);
+    Button2.Init(&Button2_Config);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure UART
     // --------------------------------------------------------------------------------------------------- //
-
-    // Define UART parameters
-    uart_config_t Uart_Config;
-    Uart_Config.Hardware.PeriphUART = UART_UART_PERIPH;
-    Uart_Config.Hardware.PeriphGPIO = UART_GPIO_PERIPH;
-    Uart_Config.Hardware.BaseUART = UART_UART_BASE;
-    Uart_Config.Hardware.BaseGPIO = UART_GPIO_BASE;
-    Uart_Config.Hardware.PinMuxRX = UART_RX_CFG;
-    Uart_Config.Hardware.PinMuxTX = UART_TX_CFG;
-    Uart_Config.Hardware.PinRX = UART_RX_PIN;
-    Uart_Config.Hardware.PinTX = UART_TX_PIN;
-    Uart_Config.Hardware.Config = UART_CFG;
-    Uart_Config.Hardware.Interrupt = UART_INTERRUPT;
-    Uart_Config.Hardware.Callback = []() { Serial.ReceiveIsr(); };
-    Uart_Config.Params.BaudRate = UART_BAUD_RATE;
 
     // Initialize UART
     Serial.Init(&Uart_Config);
@@ -1024,146 +594,46 @@ void main (void)
     // Configure encoders
     // --------------------------------------------------------------------------------------------------- //
 
-    // Define encoder parameters - Theta
-    encoder_config_t Encoder_Config;
-    Encoder_Config.Hardware.PeriphQEI = ENCODER_T_QEI_PERIPH;
-    Encoder_Config.Hardware.PeriphGPIO = ENCODER_T_GPIO_PERIPH;
-    Encoder_Config.Hardware.BaseQEI = ENCODER_T_QEI_BASE;
-    Encoder_Config.Hardware.BaseGPIO = ENCODER_T_GPIO_BASE;
-    Encoder_Config.Hardware.PinMuxA = ENCODER_T_A_CFG;
-    Encoder_Config.Hardware.PinMuxB = ENCODER_T_B_CFG;
-    Encoder_Config.Hardware.PinA = ENCODER_T_A_PIN;
-    Encoder_Config.Hardware.PinB = ENCODER_T_B_PIN;
-    Encoder_Config.Hardware.Config = ENCODER_T_CFG;
-    Encoder_Config.Hardware.Interrupt = ENCODER_T_INTERRUPT;
-    Encoder_Config.Hardware.Callback = [](){EncoderT.TimerIsr();};
-    Encoder_Config.Params.PPR = ENCODER_T_PPR;
-    Encoder_Config.Params.ScanFreq = ENCODER_T_FREQUENCY;
+    // Initialize encoder - Theta-axis
+    EncoderT.Init(&EncoderT_Config);
 
-    // Initialize encoder
-    EncoderT.Init(&Encoder_Config);
+    // Initialize encoder - X-axis
+    EncoderX.Init(&EncoderX_Config);
 
-    // Define encoder parameters - X
-    Encoder_Config.Hardware.PeriphQEI = ENCODER_X_QEI_PERIPH;
-    Encoder_Config.Hardware.PeriphGPIO = ENCODER_X_GPIO_PERIPH;
-    Encoder_Config.Hardware.BaseQEI = ENCODER_X_QEI_BASE;
-    Encoder_Config.Hardware.BaseGPIO = ENCODER_X_GPIO_BASE;
-    Encoder_Config.Hardware.PinMuxA = ENCODER_X_A_CFG;
-    Encoder_Config.Hardware.PinMuxB = ENCODER_X_B_CFG;
-    Encoder_Config.Hardware.PinA = ENCODER_X_A_PIN;
-    Encoder_Config.Hardware.PinB = ENCODER_X_B_PIN;
-    Encoder_Config.Hardware.Config = ENCODER_X_CFG;
-    Encoder_Config.Hardware.Interrupt = ENCODER_X_INTERRUPT;
-    Encoder_Config.Hardware.Callback = [](){EncoderX.TimerIsr();};
-    Encoder_Config.Params.PPR = ENCODER_X_PPR;
-    Encoder_Config.Params.ScanFreq = ENCODER_X_FREQUENCY;
-
-    // Initialize encoder
-    EncoderX.Init(&Encoder_Config);
-
-    /* ---------------------------------------------------------------------------------------------------------------- */
+    // --------------------------------------------------------------------------------------------------- //
     // RGB LED configuration
-    /* ---------------------------------------------------------------------------------------------------------------- */
-
-    // Define RGB LED configuration parameters
-    rgb_config_t Led_Config;
-    Led_Config.Periph.Pwm = RGB_PWM_PERIPH;
-    Led_Config.Periph.Gpio = RGB_GPIO_PERIPH;
-    Led_Config.Base.Pwm = RGB_PWM_BASE;
-    Led_Config.Base.Gpio = RGB_GPIO_BASE;
-    Led_Config.Gen.R = RGB_PWM_R_GEN;
-    Led_Config.Gen.G = RGB_PWM_G_GEN;
-    Led_Config.Gen.B = RGB_PWM_B_GEN;
-    Led_Config.Out.R = RGB_PWM_R_OUT;
-    Led_Config.Out.G = RGB_PWM_G_OUT;
-    Led_Config.Out.B = RGB_PWM_B_OUT;
-    Led_Config.OutBit.R = RGB_PWM_R_OUT_BIT;
-    Led_Config.OutBit.G = RGB_PWM_G_OUT_BIT;
-    Led_Config.OutBit.B = RGB_PWM_B_OUT_BIT;
-    Led_Config.PinMux.R = RGB_PIN_R_CFG;
-    Led_Config.PinMux.G = RGB_PIN_G_CFG;
-    Led_Config.PinMux.B = RGB_PIN_B_CFG;
-    Led_Config.Pin.R = RGB_R_PIN;
-    Led_Config.Pin.G = RGB_G_PIN;
-    Led_Config.Pin.B = RGB_B_PIN;
-    Led_Config.Int.Interrupt = RGB_PWM_INT;
-    Led_Config.Int.Gen = RGB_PWM_INT_GEN;
-    Led_Config.Int.Callback = [](){Led.PwmIsr();};
-    Led_Config.Params.PwmMode = RGB_PWM_CFG;
-    Led_Config.Params.PwmFrequency = RGB_PWM_FREQ;
+    // --------------------------------------------------------------------------------------------------- //
 
     // Initialize RGB LED
     Led.Init (&Led_Config);
 
     // --------------------------------------------------------------------------------------------------- //
-    // Configure stepper GPIOs and PWM generator
+    // Configure stepper
     // --------------------------------------------------------------------------------------------------- //
 
-    // Enable peripheral clocks
-    SysCtlPeripheralEnable (STEPPER_GPIO_PERIPH);
-    SysCtlPeripheralEnable (SWITCH_GPIO_PERIPH);
-    SysCtlPeripheralEnable (STEPPER_PWM_PERIPH);
+    // Initialize stepper
+    Stepper.Init (&Stepper_Config);
 
-    // Power up delay
-    SysCtlDelay (10);
+    // --------------------------------------------------------------------------------------------------- //
+    // Configure LQR
+    // --------------------------------------------------------------------------------------------------- //
 
-    // Unlock used pins (has no effect if pin is not protected by the GPIOCR register
-    GPIOUnlockPin(STEPPER_GPIO_BASE, STEPPER_PIN_DIR | STEPPER_PIN_EN);
-    GPIOUnlockPin(SWITCH_GPIO_BASE, SWITCH_PIN_START | SWITCH_PIN_END);
+    // Define LQR gains and references
+    float Gains[4] = {-7.071068, -8.212938, -49.663068, -10.818448};
+    float Refs[4] = {0};
 
-    // Configure step pin as PWM output
-    GPIOPinTypePWM (STEPPER_GPIO_BASE, STEPPER_PIN_STEP);
-    GPIOPinConfigure (STEPPER_GPIO_CFG);
-
-    // Configure DIR and EN pins as outputs
-    GPIOPinTypeGPIOOutput (STEPPER_GPIO_BASE, STEPPER_PIN_DIR | STEPPER_PIN_EN);
-
-    // Configure pins - 8mA drive with slew rate control and push-pull mode
-    GPIOPadConfigSet (STEPPER_GPIO_BASE, STEPPER_PIN_DIR | STEPPER_PIN_EN, GPIO_STRENGTH_8MA_SC, GPIO_PIN_TYPE_STD);
-
-    // Set initial output states
-    StepperSetDirection (Stepper.Dir);
-    StepperSetEnable(Stepper.Enabled);
-
-    // Configure switch pins as inputs
-    GPIOPinTypeGPIOInput (SWITCH_GPIO_BASE, SWITCH_PIN_START | SWITCH_PIN_END);
-
-    // Enable pull-up resistor
-    GPIOPadConfigSet (SWITCH_GPIO_BASE, SWITCH_PIN_START | SWITCH_PIN_END, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
-
-    // Define initial PWM clock
-    SysCtlPWMClockSet(STEPPER_PWM_DIV_CFG);
-    Stepper.PwmClock = cpuClock / STEPPER_PWM_DIV;
-
-    // Configure PWM options
-    PWMGenConfigure (STEPPER_PWM_BASE, STEPPER_PWM_GEN, PWM_GEN_MODE_DOWN);
-
-    // Set PWM frequency and duty
-    //_StepperChangePWM (STEPPER_PPS_MIN);
-
-    // Turn on the output pins
-    //PWMOutputState (STEPPER_PWM_BASE, STEPPER_PWM_OUT_BIT , true);
-
-    // Interrupt on zero count
-    PWMGenIntTrigEnable(STEPPER_PWM_BASE, STEPPER_PWM_GEN, PWM_INT_CNT_ZERO);
-
-    // Register interrupt handler - PWMGenIntRegister doesn't work for STEPPER_INT for some reason???
-    IntRegister(STEPPER_INT, &IsrPwmZero);
-    //PWMGenIntRegister(STEPPER_PWM_BASE, STEPPER_PWM_GEN, &IsrPwmZero);
-
-    // Enable interrupt
-    PWMIntEnable(STEPPER_PWM_BASE, STEPPER_INT_PWM);
-    IntEnable(STEPPER_INT);
+    // Initialize LQR controller
+    LQR.Init (Gains, Refs, 4);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure Systick timer
     // --------------------------------------------------------------------------------------------------- //
 
     // Set timer period
-    SysTickPeriodSet ((cpuClock/TIMER_FREQUENCY) - 1);
+    SysTickPeriodSet ((SysCtlClockGet()/TIMER_FREQUENCY) - 1);
 
     // Register interrupt handler
-    SysTickIntRegister (&IsrSysTick);
+    SysTickIntRegister (IsrSysTick);
 
     // Enable timer interrupt
     SysTickIntEnable ();
@@ -1203,19 +673,38 @@ void main (void)
     // Main loop
     // --------------------------------------------------------------------------------------------------- //
 
+//    // Set encoder counter - Add offset because cart can move past limit switch trigger point
+//    EncoderX.SetPos(CalX.Max/2 + CalX.Offset);
+//    SysTickCounter = 0;
+//    while (SysTickCounter < 1000);
+//
+//    Stepper.Move (STEPPER_VEL_MAX, 1);
+//
+//    SysTickCounter = 0;
+//    while (SysTickCounter < 500);
+//
+//    Stepper.Move (-STEPPER_VEL_MAX, 1);
+//
+//    SysTickCounter = 0;
+//    while (SysTickCounter < 1000);
+//
+//    Stepper.Move (0, 2);
+
     while (1)
     {
 //        // Start stepper
-//        StepperMoveAccel (PPS, -Accel);
+//        Stepper.Move (-Vel, Acc);
 //
 //        // Move until home switch triggers
-//        while (Stepper.Enabled);
+//        while (Stepper.GetEnabled())
+//            Stepper.GetStatus(&StepperStatus);
 //
 //        // Start stepper
-//        StepperMoveAccel (PPS, Accel);
+//        Stepper.Move (Vel, Acc);
 //
 //        // Move until home switch triggers
-//        while (Stepper.Enabled);
+//        while (Stepper.GetEnabled())
+//            Stepper.GetStatus(&StepperStatus);
     }
 }
 
