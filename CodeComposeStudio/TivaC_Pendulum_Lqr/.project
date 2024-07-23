@@ -66,6 +66,16 @@
 			<locationURI>LIBS_LOCATION/Source/Lcd_TivaC.hpp</locationURI>
 		</link>
 		<link>
+			<name>Components/Lead_TivaC.cpp</name>
+			<type>1</type>
+			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/Lead_TivaC.cpp</locationURI>
+		</link>
+		<link>
+			<name>Components/Lead_TivaC.hpp</name>
+			<type>1</type>
+			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/Lead_TivaC.hpp</locationURI>
+		</link>
+		<link>
 			<name>Components/Lqr_TivaC.cpp</name>
 			<type>1</type>
 			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/Lqr_TivaC.cpp</locationURI>
@@ -74,6 +84,16 @@
 			<name>Components/Lqr_TivaC.hpp</name>
 			<type>1</type>
 			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/Lqr_TivaC.hpp</locationURI>
+		</link>
+		<link>
+			<name>Components/Pid_TivaC.cpp</name>
+			<type>1</type>
+			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/Pid_TivaC.cpp</locationURI>
+		</link>
+		<link>
+			<name>Components/Pid_TivaC.hpp</name>
+			<type>1</type>
+			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/Pid_TivaC.hpp</locationURI>
 		</link>
 		<link>
 			<name>Components/Rgb_TivaC.cpp</name>

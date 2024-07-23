@@ -91,8 +91,14 @@ extern "C"
 // Auxiliary functions
 #include "Aux_Functions.hpp"
 
-// Auxiliary functions
+// LQR functions
 #include "Lqr_TivaC.hpp"
+
+// PID functions
+#include "Pid_TivaC.hpp"
+
+// Lead functions
+#include "Lead_TivaC.hpp"
 
 // Standard libraries
 #include <stdint.h>
@@ -303,6 +309,16 @@ typedef enum
     CAL_RUNNING,                // Calibration is running
     sizeof_calibration_status_t // Do not change.
 } calibration_status_t;
+
+// Control modes
+typedef enum
+{
+    CONTROL_OFF,            // No control
+    CONTROL_LQR,            // LQR control
+    CONTROL_PID,            // PID control
+    CONTROL_LEAD,           // Lead control
+    sizeof_control_mode_t   // Do not change.
+} control_mode_t;
 
 // ------------------------------------------------------------------------------------------------------- //
 // Structs

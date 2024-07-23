@@ -63,7 +63,13 @@ Rgb Led;
 Stepper Stepper;
 
 // LQR object - From LQR_TivaC class
-Lqr LQR;
+Lqr LqrController;
+
+// PID object - From Pid_TivaC class
+Pid PidController;
+
+// Lead object - From Lead_TivaC class
+Lead LeadController;
 
 // ------------------------------------------------------------------------------------------------------- //
 // Variables
@@ -79,8 +85,11 @@ volatile pendulum_t Pendulum = pendulum_t_default;
 volatile calibration_t CalT = {.Status = CAL_PENDING, .Progress = 0, .Offset = 0, .Max = ENCODER_T_PPR};
 volatile calibration_t CalX = {.Status = CAL_PENDING, .Progress = 0, .Offset = 1000, .Max = ENCODER_X_PPR};
 
-volatile float PosRefShaddow = 0;
+// Control mode
+volatile control_mode_t ControlMode = CONTROL_OFF;
 
+// Cart position reference - Shaddow value
+volatile float PosRefShaddow = 0;
 
 // Global counters
 volatile uint32_t SysTickCounter = 0;
@@ -100,11 +109,6 @@ const uint32_t RgbInterval = TIMER_FREQUENCY / RGB_REFRESH_FREQUENCY;
 const uint32_t ButtonInterval = TIMER_FREQUENCY / BUTTON_SCAN_FREQUENCY;
 const uint32_t EncoderTInterval = TIMER_FREQUENCY / ENCODER_T_FREQUENCY;
 const uint32_t EncoderXInterval = TIMER_FREQUENCY / ENCODER_X_FREQUENCY;
-
-// TODO: REMOVE
-float Vel = 0.1;
-float Acc = 0.1;
-stepper_status_t StepperStatus = stepper_status_t_default;
 
 // ------------------------------------------------------------------------------------------------------- //
 // Update cart state based on encoder readings
@@ -172,17 +176,6 @@ void PendulumCalibrateAngle ()
     CalT.Progress = 0;
     CalT.Status = CAL_RUNNING;
 
-    // Wait until X encoder updates
-    float LastSysTick = SysTickCounter;
-    while (SysTickCounter - LastSysTick < EncoderXInterval);
-
-    // Start stepper - Backwards direction
-    Stepper.Move (-0.5, 1);
-
-    // Move to X-axis 0
-    while (Cart.Pos > 0);
-    Stepper.Stop();
-
     // Aux variables
     uint32_t TimeEven[10] = {};
     uint32_t TimeOdd[10] = {};
@@ -190,7 +183,6 @@ void PendulumCalibrateAngle ()
     uint32_t PosOdd[10] = {};
     float SlopeEven, OffsetEven, SlopeOdd, OffsetOdd;
     int32_t Offset = 0;
-
 
     // Set reference to a known value
     EncoderT.SetPos(ENCODER_T_PPR/2);
@@ -251,46 +243,42 @@ void PendulumCalibrateAngle ()
 
 void DeviceUpdateUart()
 {
-    // Send data only if axis are calibrated
-    if ((CalX.Status == CAL_DONE) && (CalT.Status == CAL_DONE))
-    {
-        char Aux_String [50];
+    char Aux_String [50];
 
-        ltoa (SysTickCounter, Aux_String, 10);
-        Serial.SendString (Aux_String);
-        Serial.SendString (";");
+    ltoa (SysTickCounter, Aux_String, 10);
+    Serial.SendString (Aux_String);
+    Serial.SendString (";");
 
-        float AccNow = 0;
-        if (Stepper.GetTargetVel() > Stepper.GetCurrentVel())
-            AccNow = Stepper.GetCurrentAcc();
-        else if (Stepper.GetTargetVel() < Stepper.GetCurrentVel())
-            AccNow = -Stepper.GetCurrentAcc();
-        Aux::F2Str(AccNow, Aux_String, 6);
+    float AccNow = 0;
+    if (Stepper.GetTargetVel() > Stepper.GetCurrentVel())
+        AccNow = Stepper.GetCurrentAcc();
+    else if (Stepper.GetTargetVel() < Stepper.GetCurrentVel())
+        AccNow = -Stepper.GetCurrentAcc();
+    Aux::F2Str(AccNow, Aux_String, 6);
 
-        Serial.SendString (Aux_String);
-        Serial.SendString (";");
+    Serial.SendString (Aux_String);
+    Serial.SendString (";");
 
-        ltoa ((Stepper.GetDir() == 1 ? Stepper.GetPwmFrequency() : -Stepper.GetPwmFrequency()), Aux_String, 10);
+    ltoa ((Stepper.GetDir() == 1 ? Stepper.GetPwmFrequency() : -Stepper.GetPwmFrequency()), Aux_String, 10);
 
-        Serial.SendString (Aux_String);
-        Serial.SendString (";");
+    Serial.SendString (Aux_String);
+    Serial.SendString (";");
 
-        Aux::F2Str (Cart.Pos, Aux_String, 6);
-        Serial.SendString (Aux_String);
-        Serial.SendString (";");
+    Aux::F2Str (Cart.Pos, Aux_String, 6);
+    Serial.SendString (Aux_String);
+    Serial.SendString (";");
 
-        Aux::F2Str (Cart.Vel, Aux_String, 6);
-        Serial.SendString (Aux_String);
-        Serial.SendString (";");
+    Aux::F2Str (Cart.Vel, Aux_String, 6);
+    Serial.SendString (Aux_String);
+    Serial.SendString (";");
 
-        Aux::F2Str (Pendulum.Pos, Aux_String, 6);
-        Serial.SendString (Aux_String);
-        Serial.SendString (";");
+    Aux::F2Str (Pendulum.Pos, Aux_String, 6);
+    Serial.SendString (Aux_String);
+    Serial.SendString (";");
 
-        Aux::F2Str (Pendulum.Vel, Aux_String, 6);
-        Serial.SendString (Aux_String);
-        Serial.SendString ("\n");
-    }
+    Aux::F2Str (Pendulum.Vel, Aux_String, 6);
+    Serial.SendString (Aux_String);
+    Serial.SendString ("\n");
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -301,7 +289,6 @@ void DeviceUpdateLcd()
 {
     Display.ClearAll();
     Display.DrawFilledRectangle (0, 0, 83, 8, LCD_PIXEL_ON);
-
 
     // Calibration mode
     if ((CalX.Status == CAL_RUNNING) || (CalT.Status == CAL_RUNNING))
@@ -348,14 +335,35 @@ void DeviceUpdateLcd()
     // Run mode
     else
     {
-        Display.Goto(0, 18);
-        Display.WriteString("LQR MODE", LCD_FONT_SMALL, LCD_PIXEL_XOR);
+        if (ControlMode == CONTROL_OFF)
+        {
+            Display.Goto(0, 18);
+            Display.WriteString("OFF MODE", LCD_FONT_SMALL, LCD_PIXEL_XOR);
+        }
+
+        else if (ControlMode == CONTROL_LQR)
+        {
+            Display.Goto(0, 18);
+            Display.WriteString("LQR MODE", LCD_FONT_SMALL, LCD_PIXEL_XOR);
+        }
+
+        else if (ControlMode == CONTROL_PID)
+        {
+            Display.Goto(0, 18);
+            Display.WriteString("PID MODE", LCD_FONT_SMALL, LCD_PIXEL_XOR);
+        }
+
+        else if (ControlMode == CONTROL_LEAD)
+        {
+            Display.Goto(0, 12);
+            Display.WriteString("LEAD MODE", LCD_FONT_SMALL, LCD_PIXEL_XOR);
+        }
 
         float NumberToWrite = 0;
 
         Display.Goto(2, 0);
         Display.WriteString("xR:", LCD_FONT_SMALL, LCD_PIXEL_ON);
-        NumberToWrite = LQR.GetReference(0);
+        NumberToWrite = LqrController.GetReference(0);
         if (NumberToWrite >= 0)
             Display.WriteChar(' ', LCD_FONT_SMALL, LCD_PIXEL_ON);
         Display.WriteFloat(NumberToWrite, 6, LCD_FONT_SMALL, LCD_PIXEL_ON);
@@ -404,7 +412,7 @@ void DeviceUpdateLcd()
         Display.DrawPixel(xP, 13, LCD_PIXEL_OFF);
 
         // Reference mark
-        xP = (uint8_t)Aux::Map (LQR.GetReference(0), -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
+        xP = (uint8_t)Aux::Map (LqrController.GetReference(0), -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
         Display.DrawPixel(xP, 14, LCD_PIXEL_XOR);
         Display.DrawPixel(xP, 13, LCD_PIXEL_OFF);
     }
@@ -426,7 +434,7 @@ void DeviceUpdateRgb()
     // Run mode
     else
     {
-        if (Aux::FastFabs(LQR.GetReference(0) - LQR.GetState(0)) < 0.001)
+        if (Aux::FastFabs(LqrController.GetReference(0) - Cart.Pos) < 0.001)
             Led.SetColor(RGB_GREEN, 50);
         else
             Led.SetColor(RGB_YELLOW, 50);
@@ -457,7 +465,25 @@ void DeviceUpdateButton1 ()
 
             // Double click
             else if (EventData.Counter == 2)
-                LQR.SetReference(0, PosRefShaddow);
+            {
+                LqrController.SetReference(0, PosRefShaddow);
+                PidController.SetReference(PosRefShaddow);
+                LeadController.SetReference(PosRefShaddow);
+            }
+        }
+
+        // Button long clicks
+        else if (EventData.EventCode == BUTTON_LONG_CLICK)
+        {
+            // Single click
+            if (EventData.Counter == 1)
+            {
+                if (ControlMode == CONTROL_OFF)
+                    ControlMode = (CONTROL_LEAD);
+
+                else
+                    ControlMode = (control_mode_t)(ControlMode - 1);
+            }
         }
     }
 }
@@ -486,7 +512,25 @@ void DeviceUpdateButton2 ()
 
             // Double click
             else if (EventData.Counter == 2)
-                LQR.SetReference(0, PosRefShaddow);
+            {
+                LqrController.SetReference(0, PosRefShaddow);
+                PidController.SetReference(PosRefShaddow);
+                LeadController.SetReference(PosRefShaddow);
+            }
+        }
+
+        // Button long clicks
+        else if (EventData.EventCode == BUTTON_LONG_CLICK)
+        {
+            // Single click
+            if (EventData.Counter == 1)
+            {
+                if (ControlMode == (sizeof_control_mode_t - 1))
+                    ControlMode = CONTROL_OFF;
+
+                else
+                    ControlMode = (control_mode_t)(ControlMode + 1);
+            }
         }
     }
 }
@@ -497,23 +541,43 @@ void DeviceUpdateButton2 ()
 
 void DeviceUpdateControl()
 {
-    if (Aux::FastFabs(Pendulum.Pos) < 0.2)
+    // Control is on
+    if (ControlMode != CONTROL_OFF)
     {
-        LQR.SetState(0, Cart.Pos);
-        LQR.SetState(1, Cart.Vel);
-        LQR.SetState(2, Pendulum.Pos);
-        LQR.SetState(3, Pendulum.Vel);
-        float Unxt = LQR.Compute();
-        if (Unxt > STEPPER_ACC_MAX)
-            Unxt = STEPPER_ACC_MAX;
-        else if (Unxt < -STEPPER_ACC_MAX)
-            Unxt = -STEPPER_ACC_MAX;
+        float Unxt = 0;
 
-        float FinalVelocity = (Unxt < 0 ? -STEPPER_VEL_MAX : STEPPER_VEL_MAX);
-        float Acceleration = Aux::FastFabs(Unxt);
-        Stepper.Move(FinalVelocity, Acceleration);
+        // PID controller
+        if (ControlMode == CONTROL_PID)
+            Unxt = PidController.Compute(Cart.Pos);
+
+        // Lead controller
+        else if (ControlMode == CONTROL_LEAD)
+            Unxt = LeadController.Compute(Cart.Pos);
+
+        // LQR controller
+        else if (ControlMode == CONTROL_LQR && (Aux::FastFabs(Pendulum.Pos) < 0.2))
+        {
+            LqrController.SetState(0, Cart.Pos);
+            LqrController.SetState(1, Cart.Vel);
+            LqrController.SetState(2, Pendulum.Pos);
+            LqrController.SetState(3, Pendulum.Vel);
+
+            Unxt = LqrController.Compute();
+        }
+
+        // Apply control action
+        if (Unxt != 0)
+        {
+            float FinalVelocity = (Unxt < 0 ? -STEPPER_VEL_MAX : STEPPER_VEL_MAX);
+            float Acceleration = Aux::FastFabs(Unxt);
+            Stepper.Move(FinalVelocity, Acceleration);
+        }
+
+        else
+            Stepper.Stop();
     }
 
+    // Control is off
     else
         Stepper.Stop();
 }
@@ -551,7 +615,7 @@ void IsrSysTick ()
     }
 
     // UART update
-    if (++UartCounter >= UartInterval)
+    if ((++UartCounter >= UartInterval) && ((CalX.Status == CAL_DONE) && (CalT.Status == CAL_DONE)))
     {
         DeviceUpdateUart();
         UartCounter = 0;
@@ -607,7 +671,7 @@ void main ()
     // LCD configuration
     // --------------------------------------------------------------------------------------------------- //
 
-    // Initialise LCD display
+    // Initialize LCD display
     Display.Init (&Lcd_Config);
 
     // Turn on backlight
@@ -617,53 +681,71 @@ void main ()
     // Buttons configuration
     // --------------------------------------------------------------------------------------------------- //
 
-    // Initialise button 1
+    // Initialize button 1
     Button1.Init(&Button1_Config);
 
-    // Initialise button 2
+    // Initialize button 2
     Button2.Init(&Button2_Config);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure UART
     // --------------------------------------------------------------------------------------------------- //
 
-    // Initialise UART
+    // Initialize UART
     Serial.Init(&Uart_Config);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure encoders
     // --------------------------------------------------------------------------------------------------- //
 
-    // Initialise encoder - Theta-axis
+    // Initialize encoder - Theta-axis
     EncoderT.Init(&EncoderT_Config);
 
-    // Initialise encoder - X-axis
+    // Initialize encoder - X-axis
     EncoderX.Init(&EncoderX_Config);
 
     // --------------------------------------------------------------------------------------------------- //
     // RGB LED configuration
     // --------------------------------------------------------------------------------------------------- //
 
-    // Initialise RGB LED
+    // Initialize RGB LED
     Led.Init (&Led_Config);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure stepper
     // --------------------------------------------------------------------------------------------------- //
 
-    // Initialise stepper
+    // Initialize stepper
     Stepper.Init (&Stepper_Config);
 
     // --------------------------------------------------------------------------------------------------- //
-    // Configure LQR
+    // Configure LQR controller
     // --------------------------------------------------------------------------------------------------- //
 
     // Define LQR gains and references
     float Gains[4] = {-7.071068, -8.212938, -49.663068, -10.818448};
     float Refs[4] = {0};
 
-    // Initialise LQR controller
-    LQR.Init (Gains, Refs, 4);
+    // Initialize LQR controller
+    LqrController.Init (Gains, Refs, 4, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
+
+    // --------------------------------------------------------------------------------------------------- //
+    // Configure PID controller
+    // --------------------------------------------------------------------------------------------------- //
+
+    // Define PID gains, reference and limits
+    PidController.SetGains(5, 0, 1000);
+    PidController.SetReference(0);
+    PidController.SetLimits(-STEPPER_ACC_MAX, STEPPER_ACC_MAX);
+
+    // --------------------------------------------------------------------------------------------------- //
+    // Configure lead controller
+    // --------------------------------------------------------------------------------------------------- //
+
+    // Define lead gains, reference and limits
+    LeadController.SetGains(0.960784313, 88.2630882352941, -88.2075000000000);
+    LeadController.SetReference(0);
+    LeadController.SetLimits(-STEPPER_ACC_MAX, STEPPER_ACC_MAX);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure Systick timer
@@ -694,6 +776,16 @@ void main ()
     Display.WriteString(DEVICE_FW_AUTHOR, LCD_FONT_SMALL, LCD_PIXEL_ON);
     Display.Commit();
 
+    Serial.SendString (DEVICE_FW_NAME);
+    Serial.SendString (" - Version: ");
+    Serial.SendString (DEVICE_FW_VERSION);
+    Serial.SendString (" - Date: ");
+    Serial.SendString (__DATE__ "\0");
+    Serial.SendString (" " __TIME__ "\0");
+    Serial.SendString (" - Author: ");
+    Serial.SendString (DEVICE_FW_AUTHOR);
+    Serial.SendString ("\n");
+
     SysCtlDelay(30000000);
 
     // --------------------------------------------------------------------------------------------------- //
@@ -706,6 +798,17 @@ void main ()
     // Calibrate cart X position limits
     CartCalibratePos ();
 
+    // Wait until X encoder updates
+    float LastSysTick = SysTickCounter;
+    while (SysTickCounter - LastSysTick < EncoderXInterval);
+
+    // Start stepper - Backwards direction
+    Stepper.Move (-0.5, 1);
+
+    // Move to X-axis 0
+    while (Cart.Pos > 0);
+    Stepper.Stop();
+
     // Calibrate pendulum angle
     PendulumCalibrateAngle ();
 
@@ -713,39 +816,7 @@ void main ()
     // Main loop
     // --------------------------------------------------------------------------------------------------- //
 
-//    // Set encoder counter - Add offset because cart can move past limit switch trigger point
-//    EncoderX.SetPos(CalX.Max/2 + CalX.Offset);
-//    SysTickCounter = 0;
-//    while (SysTickCounter < 1000);
-//
-//    Stepper.Move (STEPPER_VEL_MAX, 1);
-//
-//    SysTickCounter = 0;
-//    while (SysTickCounter < 500);
-//
-//    Stepper.Move (-STEPPER_VEL_MAX, 1);
-//
-//    SysTickCounter = 0;
-//    while (SysTickCounter < 1000);
-//
-//    Stepper.Move (0, 2);
-
-    while (1)
-    {
-//        // Start stepper
-//        Stepper.Move (-Vel, Acc);
-//
-//        // Move until home switch triggers
-//        while (Stepper.GetEnabled())
-//            Stepper.GetStatus(&StepperStatus);
-//
-//        // Start stepper
-//        Stepper.Move (Vel, Acc);
-//
-//        // Move until home switch triggers
-//        while (Stepper.GetEnabled())
-//            Stepper.GetStatus(&StepperStatus);
-    }
+    while (1);
 }
 
 // ------------------------------------------------------------------------------------------------------- //
