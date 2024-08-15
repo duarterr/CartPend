@@ -1,0 +1,22 @@
+Removed Pin From Net: NetName=XF_PE3 Pin=CN3-1
+Removed Pin From Net: NetName=XI_PE2 Pin=CN3-2
+Removed Pin From Net: NetName=GND Pin=CN3-3
+Removed Pin From Net: NetName=GND Pin=CN3-4
+Added Component: Designator=CN5(Header 2x2 Right Angle)
+Added Pin To Net: NetName=XF_PE3 Pin=CN3-1
+Added Pin To Net: NetName=XI_PE2 Pin=CN3-2
+Added Pin To Net: NetName=GND Pin=CN3-3
+Added Pin To Net: NetName=GND Pin=CN3-4
+Added Pin To Net: NetName=M_A1 Pin=CN3-4
+Added Pin To Net: NetName=M_A1 Pin=U1-12
+Added Net: Name=M_A1
+Added Pin To Net: NetName=M_A2 Pin=CN3-3
+Added Pin To Net: NetName=M_A2 Pin=U1-11
+Added Net: Name=M_A2
+Added Pin To Net: NetName=M_B1 Pin=CN3-2
+Added Pin To Net: NetName=M_B1 Pin=U1-13
+Added Net: Name=M_B1
+Added Pin To Net: NetName=M_B2 Pin=CN3-1
+Added Pin To Net: NetName=M_B2 Pin=U1-14
+Added Net: Name=M_B2
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle

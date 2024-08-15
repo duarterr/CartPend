@@ -1,0 +1,4 @@
+Added Component: Designator=CN5(Header 2x2 Right Angle)
+Added Component: Designator=F?(PIN-W2/E2.8)
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle
+Added Member To Class: ClassName=Schematic Member=Component F? Fuse 1

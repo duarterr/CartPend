@@ -1,0 +1,6 @@
+Added Pin To Net: NetName=XF_PE3 Pin=CN5-1
+Added Pin To Net: NetName=XI_PE2 Pin=CN5-2
+Added Pin To Net: NetName=GND Pin=CN5-3
+Added Pin To Net: NetName=GND Pin=CN5-4
+Change Net Name : Old Net Name=PD0] New Net Name=PD0
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle

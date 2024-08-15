@@ -1,0 +1,6 @@
+Added Pin To Net: NetName=DIR_PB1 Pin=CN1-7
+Added Pin To Net: NetName=DIR_PB1 Pin=U1-8
+Added Net: Name=DIR_PB1
+Added Pin To Net: NetName=EN_PB0 Pin=CN1-5
+Added Pin To Net: NetName=EN_PB0 Pin=U1-1
+Added Net: Name=EN_PB0

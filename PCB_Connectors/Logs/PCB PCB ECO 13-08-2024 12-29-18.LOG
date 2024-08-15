@@ -1,0 +1,5 @@
+Removed Member From Class: ClassName=Schematic Member=CN5
+Change Component DesignItemId : Designator=CN3 Old DesignItemId=Header 2X2H New DesignItemId=Header 2X2 Right Angle
+Change Component Footprint: Designator=CN3 Old Footprint=HDR2X2H New Footprint=Header 2x2 Right Angle
+Change Component Comment : Designator=CN3 Old Comment=Header 2X2H New Comment=Header 2X2 Right Angle
+Added Component: Designator=CN3(Header 2x2 Right Angle)

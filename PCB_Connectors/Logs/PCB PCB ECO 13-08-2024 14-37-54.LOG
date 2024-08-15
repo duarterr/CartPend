@@ -1,0 +1,6 @@
+Removed Pin From Net: NetName=NetCN3_1 Pin=U1-11
+Removed Pin From Net: NetName=NetCN3_4 Pin=U1-14
+Added Component: Designator=CN5(Header 2x2 Right Angle)
+Added Pin To Net: NetName=NetCN3_4 Pin=U1-11
+Added Pin To Net: NetName=NetCN3_1 Pin=U1-14
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle

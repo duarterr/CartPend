@@ -1,0 +1,56 @@
+Added Component: Designator=R1(RES0603 - rounded)
+Added Component: Designator=R2(RES0603 - rounded)
+Added Component: Designator=R3(RES0603 - rounded)
+Added Component: Designator=R4(RES0603 - rounded)
+Added Component: Designator=R5(RES0603 - rounded)
+Added Component: Designator=R6(RES0603 - rounded)
+Added Component: Designator=R7(RES0603 - rounded)
+Added Component: Designator=R8(RES0603 - rounded)
+Added Component: Designator=R9(RES0603 - rounded)
+Added Component: Designator=R10(RES0603 - rounded)
+Added Component: Designator=R11(RES0603 - rounded)
+Added Component: Designator=R12(RES0603 - rounded)
+Added Pin To Net: NetName=12V0 Pin=R1-2
+Added Pin To Net: NetName=EX_A_PC5 Pin=R2-1
+Added Pin To Net: NetName=GND Pin=R3-1
+Added Pin To Net: NetName=EX_A_PC5 Pin=R3-2
+Added Pin To Net: NetName=12V0 Pin=R4-2
+Added Pin To Net: NetName=GND Pin=R6-1
+Added Pin To Net: NetName=12V0 Pin=R7-2
+Added Pin To Net: NetName=ET_A_PD6 Pin=R8-1
+Added Pin To Net: NetName=GND Pin=R9-1
+Added Pin To Net: NetName=ET_A_PD6 Pin=R9-2
+Added Pin To Net: NetName=12V0 Pin=R10-2
+Added Pin To Net: NetName=GND Pin=R12-1
+Added Pin To Net: NetName=ENC_T_A Pin=R7-1
+Added Pin To Net: NetName=ENC_T_A Pin=R8-2
+Added Net: Name=ENC_T_A
+Added Pin To Net: NetName=ENC_T_B Pin=R10-1
+Added Pin To Net: NetName=ENC_T_B Pin=R11-2
+Added Net: Name=ENC_T_B
+Added Pin To Net: NetName=ENC_X_A Pin=R1-1
+Added Pin To Net: NetName=ENC_X_A Pin=R2-2
+Added Net: Name=ENC_X_A
+Added Pin To Net: NetName=ENC_X_B Pin=R4-1
+Added Pin To Net: NetName=ENC_X_B Pin=R5-2
+Added Net: Name=ENC_X_B
+Added Pin To Net: NetName=ET_B_PD7 Pin=CN2-17
+Added Pin To Net: NetName=ET_B_PD7 Pin=R11-1
+Added Pin To Net: NetName=ET_B_PD7 Pin=R12-2
+Added Net: Name=ET_B_PD7
+Added Pin To Net: NetName=EX_B_PC6 Pin=CN2-11
+Added Pin To Net: NetName=EX_B_PC6 Pin=R5-1
+Added Pin To Net: NetName=EX_B_PC6 Pin=R6-2
+Added Net: Name=EX_B_PC6
+Added Member To Class: ClassName=Schematic Member=Component R1 3K3 1/16W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R2 2k7 1/10W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R3 1K 1/10W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R4 3K3 1/16W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R5 2k7 1/10W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R6 1K 1/10W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R7 3K3 1/16W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R8 2k7 1/10W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R9 1K 1/10W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R10 3K3 1/16W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R11 2k7 1/10W 1% 0603
+Added Member To Class: ClassName=Schematic Member=Component R12 1K 1/10W 1% 0603

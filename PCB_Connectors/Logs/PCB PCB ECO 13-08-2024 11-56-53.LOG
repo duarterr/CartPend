@@ -1,0 +1,6 @@
+Change Component Footprint: Designator=CN1 Old Footprint=HDR2X10 New Footprint=Header 10x2
+Change Component Footprint: Designator=CN2 Old Footprint=HDR2X10 New Footprint=Header 10x2
+Added Component: Designator=CN1x(Header 10x2)
+Added Component: Designator=CN2x(Header 10x2)
+Added Member To Class: ClassName=Schematic Member=Component CN1x Header 10X2
+Added Member To Class: ClassName=Schematic Member=Component CN2x Header 10X2

@@ -1,0 +1,8 @@
+Change Component DesignItemId : Designator=C1 Old DesignItemId=22uF 20% 200V New DesignItemId=4.7uF 400V PTH ALUM
+Change Component DesignItemId : Designator=C2 Old DesignItemId=22uF 20% 200V New DesignItemId=4.7uF 400V PTH ALUM
+Change Component Footprint: Designator=C1 Old Footprint=CAP ALUM PTH - 22x10x5 -HORIZONTAL New Footprint=cap Aluminum 8x13mm Horizontal
+Change Component Footprint: Designator=C2 Old Footprint=CAP ALUM PTH - 22x10x5 -HORIZONTAL New Footprint=cap Aluminum 8x13mm Horizontal
+Change Component Comment : Designator=C1 Old Comment=22uF 20% 200V New Comment=4.7uF 400V
+Change Component Comment : Designator=C2 Old Comment=22uF 20% 200V New Comment=4.7uF 400V
+Added Component: Designator=CN5(Header 2x2 Right Angle)
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle

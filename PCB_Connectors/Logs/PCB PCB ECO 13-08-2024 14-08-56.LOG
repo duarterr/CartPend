@@ -1,0 +1,4 @@
+Change Component Designator: OldDesignator=CN1x NewDesignator=CN1
+Change Component Designator: OldDesignator=CN2x NewDesignator=CN2
+Added Component: Designator=CN5(Header 2x2 Right Angle)
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle

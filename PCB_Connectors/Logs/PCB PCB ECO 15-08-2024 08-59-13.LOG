@@ -1,0 +1,4 @@
+Added Pin To Net: NetName=ENC_X_A Pin=CN4-5
+Added Pin To Net: NetName=ENC_T_A Pin=CN4-6
+Added Pin To Net: NetName=ENC_X_B Pin=CN4-7
+Added Pin To Net: NetName=ENC_T_B Pin=CN4-8

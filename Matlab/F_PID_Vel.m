@@ -16,7 +16,7 @@ Bode_Opt.Grid = 'on';
 
 % Import data
 try
-    load('./Results/Cart.mat');    
+    load('./Results/CartVel.mat');    
 catch
     fprintf ("Cart data not found. Aborting \n\n");    
     return;
@@ -53,7 +53,7 @@ GpHz = c2d (GpHs, Ts, 'zoh')*(z^-1)
 GpHw = d2c (GpHz, 'tustin');
 
 % Gc(w) - w domain
-Gcw = zpk(90*tf([1 0.315],[1 20]))
+Gcw = zpk(119.73*tf([1 0.002],[1 0]))
 
 % Conversion to z domain - Including the unit delay that was in GpHz
 Gcz = c2d (Gcw, Ts, 'tustin')*(z^-1)

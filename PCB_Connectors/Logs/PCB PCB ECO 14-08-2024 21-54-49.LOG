@@ -1,0 +1,4 @@
+Added Component: Designator=CN5(Header 2x2 Right Angle)
+Added Pin To Net: NetName=GND Pin=J1-2
+Added Pin To Net: NetName=GND Pin=J1-3
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle

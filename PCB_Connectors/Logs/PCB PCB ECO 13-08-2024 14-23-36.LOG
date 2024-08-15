@@ -1,0 +1,7 @@
+Added Component: Designator=CN5(Header 2x2 Right Angle)
+Added Component: Designator=U1(IC_DRV8825_STEPPER_MOTOR_DRIVER_CARRIER)
+Added Pin To Net: NetName=GND Pin=U1-9
+Added Pin To Net: NetName=GND Pin=U1-15
+Added Pin To Net: NetName=12V0 Pin=U1-16
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle
+Added Member To Class: ClassName=Schematic Member=Component U1 DRV8825_STEPPER_MOTOR_DRIVER_CARRIER

@@ -1,0 +1,17 @@
+Added Component: Designator=CN5(Header 2x2 Right Angle)
+Added Pin To Net: NetName=3V3 Pin=U1-2
+Added Pin To Net: NetName=3V3 Pin=U1-3
+Added Pin To Net: NetName=3V3 Pin=U1-4
+Added Pin To Net: NetName=NetCN3_1 Pin=CN3-1
+Added Pin To Net: NetName=NetCN3_1 Pin=U1-11
+Added Net: Name=NetCN3_1
+Added Pin To Net: NetName=NetCN3_2 Pin=CN3-2
+Added Pin To Net: NetName=NetCN3_2 Pin=U1-13
+Added Net: Name=NetCN3_2
+Added Pin To Net: NetName=NetCN3_3 Pin=CN3-3
+Added Pin To Net: NetName=NetCN3_3 Pin=U1-12
+Added Net: Name=NetCN3_3
+Added Pin To Net: NetName=NetCN3_4 Pin=CN3-4
+Added Pin To Net: NetName=NetCN3_4 Pin=U1-14
+Added Net: Name=NetCN3_4
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle

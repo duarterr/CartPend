@@ -1,0 +1,6 @@
+Added Component: Designator=CN3(HDR2X2H)
+Added Component: Designator=CN4(HDR2X5H)
+Added Component: Designator=CN5(HDR2X2H)
+Added Member To Class: ClassName=Schematic Member=Component CN3 Header 2X2H
+Added Member To Class: ClassName=Schematic Member=Component CN4 Header 5X2H
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2H

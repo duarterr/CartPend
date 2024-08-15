@@ -1,0 +1,19 @@
+Change Component DesignItemId : Designator=F? Old DesignItemId=Fuse 1 New DesignItemId=PTH Box fuse
+Change Component Footprint: Designator=F? Old Footprint=PIN-W2/E2.8 New Footprint=FUSRR508W60L835T400H810
+Change Component Comment : Designator=F? Old Comment=Fuse 1 New Comment=PTH Box fuse
+Added Component: Designator=C1(CAP ALUM PTH - 22x10x5 -HORIZONTAL)
+Added Component: Designator=C2(CAP ALUM PTH - 22x10x5 -HORIZONTAL)
+Added Component: Designator=CN5(Header 2x2 Right Angle)
+Added Component: Designator=D1(DO-214AC - ROUNDED)
+Added Pin To Net: NetName=12V0 Pin=C1-1
+Added Pin To Net: NetName=GND Pin=C1-2
+Added Pin To Net: NetName=GND Pin=D1-A
+Added Pin To Net: NetName=12V0 Pin=D1-K
+Added Pin To Net: NetName=12V0 Pin=F?-2
+Added Pin To Net: NetName=NetF?_1 Pin=F?-1
+Added Pin To Net: NetName=NetF?_1 Pin=J1-1
+Added Net: Name=NetF?_1
+Added Member To Class: ClassName=Schematic Member=Component C1 22uF 20% 200V
+Added Member To Class: ClassName=Schematic Member=Component C2 22uF 20% 200V
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle
+Added Member To Class: ClassName=Schematic Member=Component D1 Fast Recovery

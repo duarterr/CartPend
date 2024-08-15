@@ -1,0 +1,6 @@
+Change Component Comment : Designator=U1 Old Comment=DRV8825_STEPPER_MOTOR_DRIVER_CARRIER New Comment=DRV8825
+Added Component: Designator=CN5(Header 2x2 Right Angle)
+Added Pin To Net: NetName=3V3 Pin=U1-5
+Added Pin To Net: NetName=3V3 Pin=U1-6
+Added Pin To Net: NetName=3V3 Pin=U1-10
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 2X2 Right Angle

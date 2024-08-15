@@ -131,7 +131,7 @@ extern "C"
 // ------------------------------------------------------------------------------------------------------- //
 
 // Firmware info
-#define DEVICE_FW_NAME          "InvPend LQR"          // Firmware name
+#define DEVICE_FW_NAME          "CARTPEND"             // Firmware name
 #define DEVICE_FW_VERSION       "1.0"                  // Firmware version
 #define DEVICE_FW_AUTHOR        "Renan Duarte"         // Firmware author
 
@@ -145,7 +145,7 @@ extern "C"
 // Buttons
 #define BUTTON_SCAN_FREQUENCY   1000                   // Button scan frequency in Hz
 #define BUTTON_SCAN_INTERVAL    (1000/BUTTON_SCAN_FREQUENCY) // Button scan interval in ms
-#define BUTTON_DEAD_TIME        10                     // Button dead time in ms
+#define BUTTON_DEAD_TIME        25                     // Button dead time in ms
 #define BUTTON_WINDOW           250                    // Button window time in ms
 #define BUTTON_LONG_TIMEOUT     1000                   // Button long press timeout in ms
 
@@ -458,7 +458,7 @@ const rgb_config_t Led_Config = {
 };
 
 // Define button 1 parameters
-const button_config_t Button1_Config = {
+button_config_t Button1_Config = {
     .Hardware = {
         .Periph = BUTTON_GPIO_PERIPH,
         .Base = BUTTON_GPIO_BASE,
@@ -473,7 +473,7 @@ const button_config_t Button1_Config = {
 };
 
 // Define button 2 parameters
-const button_config_t Button2_Config = {
+button_config_t Button2_Config = {
     .Hardware = {
         .Periph = BUTTON_GPIO_PERIPH,
         .Base = BUTTON_GPIO_BASE,
