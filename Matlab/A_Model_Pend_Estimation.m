@@ -1,160 +1,251 @@
-%% PENDULUM MODEL ESTIMATION
+%% PENDULUM MODEL ESTIMATION - OPTIMIZATION
 % FREE OSCILLATIONS - NO INPUT
-% Renan Duarte - 30/04/2024
+% Renan Duarte - 16/08/2024
 
+% Weigths of frequency and decay error can be adjusted in the minimization
+% funcion at the end of the file
+
+%% INITIAL SETUP
+
+% Set format to long engineering notation for more precise output
 format long eng;
-clear all;
-close all;
-clc;
+clear all;  % Clear all variables from the workspace
+close all;  % Close all figure windows
+clc;        % Clear command window
 
-% Search stuff also in this folder
-addpath ('./Datasources/');
-addpath ('./Functions/');
-addpath ('./Results/');
+% Add folders containing data, functions, and results to the MATLAB path
+addpath ('./Datasources/');  % Folder for data sources
+addpath ('./Functions/');    % Folder for custom functions
+addpath ('./Results/');      % Folder for saving results
 
-% Dialog popup - Save results
+% Dialog popup to ask user if they want to save the results
 OptSave = SavePopUp;
 
-% Start counting time
+% Constant for gravitational acceleration [m/s^2]
+g = 9.81;
+
+% Start a timer to measure the execution time of the script
 tic;
 
 %% EXPERIMENTAL DATA
 
-% Import data
-Experimantal_Data = readtable('20.xlsx', 'Sheet', 1);
+% Import experimental data from an Excel file
+Experimental_Data = readtable('A_Model_Pend_Estimation.xlsx', 'Sheet', 1);
 
-Time = Experimantal_Data.Time;
-Theta = Experimantal_Data.Theta;
+% Extract parameters from the data table
+Time = Experimental_Data.Time;
+Accel = Experimental_Data.Accel;
+Pos = Experimental_Data.Pos;
+PosDot = Experimental_Data.PosDot;
+Theta = Experimental_Data.Theta;
+ThetaDot = Experimental_Data.ThetaDot;
 
-% dTheta/dt
-ThetaDot = gradient(Theta(:)) ./ gradient(Time(:)); 
-
-% Frequencia do sinal experimental
-fs = PendFreq (Time, Theta);
-
-% Envelope do sinal experimental
-Env = envelope(Theta);
-
-% Initial conditions
-xi = [0; 0; Theta(1); ThetaDot(1)];
-
-%% BRUTE FORCE APPROACH - TEST ALL POSSIBLE PARAMETERS IN RANGE
-
-% Pendulum data
-
-% Pendulum mass kg (0.075)
-mv = linspace(0.07, 0.1, 20);
-
-% Distance to the center of gravity m (0.363)
-lv = linspace(0.3, 0.45, 50); 
-
-% Linear damping coefficient Ns/m (536e-6)
-kdv =  linspace(300e-6, 600e-6, 10);
-
-% Air drag constant Ns^2/m^2 (10e-9)
-kdrv = linspace(0, 1e-8, 20);
-
-% Coulomb constant force N (10e-6)
-Fcv =  linspace(0, 1e-5, 20);
-
-% Constant in tanh function (100)
-kt = 100;
-
-% Prepare loop
-Configurations_Dimensions = [numel(mv) numel(lv) numel(kdv), numel(kdrv), numel(Fcv)];
-Configurations_Max = prod(Configurations_Dimensions);
-
-Error = NaN*ones(Configurations_Max, 1);
-ppm = ParforProgressbar(Configurations_Max);
-
-fprintf ("%d combinations will be tested \n\n", Configurations_Max);
-
-parfor Idx_Cfg = 1:Configurations_Max 
-    % Progressbar update
-    ppm.increment();
-    
-    % Indexes of current iteration
-    [Idx_m, Idx_l, Idx_kd, Idx_kdr, Idx_Fc] = ind2sub(Configurations_Dimensions, Idx_Cfg);
-    
-    % Current pendulum parameters
-    m = mv(Idx_m);
-    l = lv(Idx_l);
-    kd = kdv(Idx_kd);
-    kdr = kdrv(Idx_kdr);
-    Fc = Fcv(Idx_Fc);
-   
-    % Friction array
-    F = [kd kdr Fc kt]; 
-    
-    % Solve non linear model - No input
-    [~, States] = ode45(@(t,y)PendCart(t, y, Time, 0, m, l, F), Time, xi);
-    ThetaM = States(:,3);
-    
-    % Model oscillation frequency
-    fsM = PendFreq(Time, ThetaM);
-    
-    % Model decay envelope
-    EnvM = envelope(ThetaM);
-    
-    % Total error - (dif(freq) + dif(envelope)
-    Error(Idx_Cfg) = abs(fsM-fs) + sum(abs(EnvM(1:end-100) - Env(1:end-100)));   
-    
+% Adjust theta values to oscillate around zero
+for i = 1:numel(Theta)
+    if (Theta(i) < 0)
+        Theta(i) = Theta(i) + pi;  % Shift negative values up by π
+    elseif (Theta(i) > 0)
+        Theta(i) = Theta(i) - pi;  % Shift positive values down by π
+    end
 end
-delete(ppm);
 
-% Get result with lowest error
-[Value, Idx] = min(Error(:));
-[Idx_m, Idx_l, Idx_kd, Idx_kdr, Idx_Fc] = ind2sub(Configurations_Dimensions, Idx);
+% Further adjustment to make theta oscillate around -π
+Theta = Theta - pi;
 
-% Best coefficients
-m = mv(Idx_m)
-l = lv(Idx_l)
-kd = kdv(Idx_kd)
-kdr = kdrv(Idx_kdr)
-Fc = Fcv(Idx_Fc)
+% If no input is given, make it a single value to speedup calculations
+if sum(Accel) == 0
+    Accel = 0;
+end
 
-F = [kd kdr Fc kt]; % Friction array
+% Initial state vector
+State0 = [Pos(1); PosDot(1); Theta(1); ThetaDot(1)];
+
+%% FINDING OSCILLATION PEAKS
+
+% Find the peaks in the theta data
+[Peaks, Idx] = findpeaks(Theta);
+TimePeaks = Time(Idx);  % Get the corresponding time points of the peaks
+
+% Filter peaks based on a threshold around -π to exclude outliers
+IdxValid = (abs(Peaks + pi) < 0.15) & (abs(Peaks + pi) > 0.1);
+
+% Keep only the valid peaks and their corresponding times
+Peaks = Peaks(IdxValid);
+TimePeaks = TimePeaks(IdxValid);
+
+% Estimate the undumped period of oscillation (Tosc0) from the time between peaks
+Tosc0 = mean(diff(TimePeaks));
+
+%% EQUIVALENT IDEAL PENDULUM ESTIMATION
+
+% Estimate the effective length of the pendulum using the period Tosc0
+l = g * Tosc0^2 / (4 * pi^2);
+
+%% PENDULUM PARAMETERS - RANGES OR SINGLE VALUES
+
+% Define ranges or single values for the parameters to be optimized:
+% m -> Pendulum mass [kg]
+% l -> Distance from the hinge point to the center of gravity [m]
+% kd  -> Linear damping coefficient [Ns/m] 
+% kdr -> Air drag constant [Ns^2/m^2]
+% kc  -> Coulomb constant force [N] 
+
+m = 0.146;
+l = l;
+kd = [1e-12 1e-1];
+kdr = [1e-12 1e-1];
+kc = [1e-12 1e-1];
+
+% Set the lower and upper bounds for the optimization
+LowerBound = [min(m), min(l), min(kd), min(kdr), min(kc)];
+UpperBound = [max(m), max(l), max(kd), max(kdr), max(kc)];
+
+% Initial parameter values for optimization (starting point)
+Param0 = LowerBound; 
+
+% Define the objective function for minimization, which simulates the pendulum
+objectiveFunction = @(Params) MinimizationFunction(Params, Accel, Time, State0, Theta);
+
+%% OPTIMIZATION
+
+% Set options for the optimization solver (lsqnonlin)
+options = optimoptions('lsqnonlin', 'Display', 'iter', ...
+    'StepTolerance', 1e-20, ...
+    'OptimalityTolerance', 1e-15, ...
+    'FunctionTolerance', 1e-25, ...
+    'MaxFunctionEvaluations', 1e3, ...
+    'MaxIterations', 1e3);
+
+% Run the optimization to find the best-fitting parameters
+ParamsOpt = lsqnonlin(objectiveFunction, Param0, LowerBound, UpperBound, options);
 
 %% SOLVE MODEL WITH BEST PARAMETERS
 
-% Solve non linear model
-[~, States] = ode45(@(t,y)PendCart(t, y, Time, 0, m, l, F), Time, xi);
+% Extract optimized parameters for the pendulum
+m = ParamsOpt(1)
+l = ParamsOpt(2)
 
-% Get states
-ThetaM = States(:,3);
-ThetaDotM = States(:,4);
+% Extract optimized damping coefficients
+kd = ParamsOpt(3)
+kdr = ParamsOpt(4)
+kc = ParamsOpt(5)
 
-% Model oscillating frequency
-fsM = PendFreq(Time, ThetaM);
+% Solve the nonlinear pendulum model using the optimized parameters
+[~, States] = ode45(@(SolverTime, State)CartPendModel(SolverTime, State, ParamsOpt, Accel, Time), Time, State0);
 
+% Extract the angular displacement (theta) and velocity from the solution
+ThetaM = States(:, 3);
+ThetaDotM = States(:, 4);
+
+% Calculate the frequencies of the oscillations for the experimental data and model
+[p f] = pspectrum(Theta - mean(Theta), Time);
+[pM fM] = pspectrum(ThetaM - mean(ThetaM), Time);
+
+% Calculate the decay envelope for the experimental data and model
+Env = envelope(Theta, numel(Theta), 'analytic');
+EnvM = envelope(ThetaM, numel(ThetaM), 'analytic');
+
+% Show errors
+ErrorFreq = 1 - R2_coeff(p, pM)
+ErrorDecay = 1 - R2_coeff(Env(100:end-100), EnvM(100:end-100)) 
+        
 %% PLOTS
 
+% Plot the experimental data and the simulated model results for comparison
 hFig = figure(1);
 clf(1);
-plot(Time,Theta, 'DisplayName', 'Experimental');
+
+subplot(2, 2, [1 2]);
+plot(Time, Theta, 'DisplayName', 'Experimental');
 hold on;
 plot(Time, ThetaM, 'DisplayName', 'NL model');
 grid on;
-xlim([0 Time(end)]);
+xlim([0, Time(end)]);
+title('Time response');
 xlabel('Time (s)');
-ylabel('Theta(rad)');
+ylabel('Theta (rad)');
+legend;
+
+subplot(2, 2, 3);
+plot(f, p, 'DisplayName', 'Experimental');
+hold on;
+plot(fM, pM, 'DisplayName', 'NL Model');
+grid on;
+xlim([1/Tosc0 - 0.5, 1/Tosc0 + 0.5]);
+title('Oscillation frequencies');
+xlabel('Frequency (Hz)');
+ylabel('Power');
+legend;
+
+subplot(2, 2, 4);
+plot(Time, Env, 'DisplayName', 'Experimental');
+hold on;
+plot(Time, EnvM, 'DisplayName', 'NL Model');
+grid on;
+xlim([0, Time(end)]);
+title('Decay');
+xlabel('Time (s)');
+ylabel('Theta (rad)');
 legend;
 
 %% SAVE PENDULUM OBJECT
 
-if (OptSave)    
+% If the user chose to save the results, save the optimized parameters
+if OptSave    
     Pendulum.m = m;
     Pendulum.l = l;
-    Pendulum.F = F;
-
+    Pendulum.kd = kd;
+    Pendulum.kdr = kdr;
+    Pendulum.kc = kc;
+    
+    % Delete the old results file if it exists and save the new one
     if exist('./Results/Pendulum.mat', 'file')
         delete('./Results/Pendulum.mat');
     end
     save('./Results/Pendulum.mat', 'Pendulum');    
-
 end
 
-%%
+%% END
 
+% Stop the timer and display the total execution time
 Time_Duration = toc;
-fprintf ("Calculations took %.2f seconds \n\n", Time_Duration);
+fprintf("Calculations took %.2f seconds \n\n", Time_Duration);
+
+%% CORRELATION BETWEEN TWO DATA SETS
+
+function R2 = R2_coeff(data, data_fit)
+    % Compute the R^2 correlation coefficient between two data sets
+    
+    % Total sum of squares (variance of the data)
+    sum_of_squares = sum((data - mean(data)).^2);
+    
+    % Residual sum of squares (variance of the residuals)
+    sum_of_squares_of_residuals = sum((data - data_fit).^2);
+    
+    % R^2 is the proportion of the variance explained by the model
+    R2 = 1 - sum_of_squares_of_residuals / sum_of_squares;
+end
+
+%% MINIMIZATION FUNCTION
+
+function Error = MinimizationFunction(Params, Input, Time, State0, ThetaExp)
+    % Solve the pendulum's ODE with the given parameters
+    [~, States] = ode45(@(SolverTime, State)CartPendModel(SolverTime, State, Params, Input, Time), Time, State0);
+    
+    % Extract the model's predicted angular displacement
+    ThetaM = States(:, 3);
+
+%    Error = 1 - R2_coeff (ThetaExp, ThetaM);
+    
+    % Calculate the frequencies of the oscillations for the experimental data and model
+    [p, ~] = pspectrum(ThetaExp - mean(ThetaExp), Time);
+    [pM, ~] = pspectrum(ThetaM - mean(ThetaM), Time);
+
+    % Calculate the decay envelope for the experimental data and model
+    Env = envelope(ThetaExp, numel(ThetaExp), 'analytic');
+    EnvM = envelope(ThetaM, numel(ThetaM), 'analytic');
+    
+    % Calculate the total error as the sum of errors in peak times and envelopes
+    Error = 0.1*(1 - R2_coeff(p, pM)) + ...
+            0.9*(1 - R2_coeff(Env(100:end-100), EnvM(100:end-100)));
+end

@@ -76,16 +76,6 @@
 			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/Lead_TivaC.hpp</locationURI>
 		</link>
 		<link>
-			<name>Components/Lqr_TivaC.cpp</name>
-			<type>1</type>
-			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/Lqr_TivaC.cpp</locationURI>
-		</link>
-		<link>
-			<name>Components/Lqr_TivaC.hpp</name>
-			<type>1</type>
-			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/Lqr_TivaC.hpp</locationURI>
-		</link>
-		<link>
 			<name>Components/Pid_TivaC.cpp</name>
 			<type>1</type>
 			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/Pid_TivaC.cpp</locationURI>
@@ -104,6 +94,16 @@
 			<name>Components/Rgb_TivaC.hpp</name>
 			<type>1</type>
 			<locationURI>LIBS_LOCATION/Source/Rgb_TivaC.hpp</locationURI>
+		</link>
+		<link>
+			<name>Components/StateFeedback_TivaC.cpp</name>
+			<type>1</type>
+			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/StateFeedback_TivaC.cpp</locationURI>
+		</link>
+		<link>
+			<name>Components/StateFeedback_TivaC.hpp</name>
+			<type>1</type>
+			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/StateFeedback_TivaC.hpp</locationURI>
 		</link>
 		<link>
 			<name>Components/Stepper_TivaC.cpp</name>

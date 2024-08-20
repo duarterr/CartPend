@@ -91,8 +91,8 @@ extern "C"
 // Auxiliary functions
 #include "Aux_Functions.hpp"
 
-// LQR functions
-#include "Lqr_TivaC.hpp"
+// State feedback functions
+#include "StateFeedback_TivaC.hpp"
 
 // PID functions
 #include "Pid_TivaC.hpp"
@@ -162,6 +162,7 @@ extern "C"
 // Encoder - X
 #define ENCODER_X_FREQUENCY     200                     // Encoder scan frequency
 #define ENCODER_X_PPR           83300                   // Encoder maximum counter value
+#define ENCODER_X_INITIAL_KV    0.002272                // Initial KV value. Will be adjusted after calibration
 
 // RGB LED
 #define RGB_PWM_FREQ            1000                   // RGB LED PWM frequency in Hz
@@ -171,17 +172,17 @@ extern "C"
 #define STEPPER_STEPS_REV       200                                     // Number of steps per revolution
 #define STEPPER_MICROSTEPS      32                                      // Number of pulses per step
 #define STEPPER_PPR             (STEPPER_STEPS_REV*STEPPER_MICROSTEPS)  // Total pulses per revolution
-#define STEPPER_PD              0.0136F                                 // Pulley pitch diameter (m) - 0.01273 nominal
+#define STEPPER_PD              0.0143859964587984F                     // Pulley pitch diameter (m) - 0.01273 nominal
 #define STEPPER_KV              (STEPPER_PPR/(PI*STEPPER_PD))           // Conversion factor between PPS and m/s
 #define STEPPER_PPS_MAX         200000                                  // Maximum velocity (pulses per second)
 #define STEPPER_VEL_MAX         ((float)STEPPER_PPS_MAX/STEPPER_KV)     // Maximum velocity (m/s)
 #define STEPPER_ACC_MAX         10                                      // Maximum acceleration (m/s^2)
 #define STEPPER_REFRESH_FREQ    1000                                    // Velocity control frequency
+#define STEPPER_VEL_CAL         0.2                                     // Velocity during axis calirbation
 
 // X-axis
-#define X_VALUE_TOTAL_M         0.4055F                 // Maximum travel distance in m
+#define X_VALUE_TOTAL_M         0.4037F                 // Maximum travel distance in m
 #define X_VALUE_ABS_M           (X_VALUE_TOTAL_M/2)     // Axis limits in m (-X_VALUE_ABS_M to X_VALUE_ABS_M)
-
 // Theta-axis
 #define T_VALUE_MAX_RAD         (2*PI)                  // Maximum angle in radians
 #define T_VALUE_ABS_MAX         PI                      // Axis limits in radians (-T_VALUE_ABS_MAX to T_VALUE_ABS_MAX)
@@ -357,6 +358,7 @@ typedef struct
     uint8_t Progress;               // Progress (0 to 100)
     int32_t Offset;                 // Encoder counter offset
     uint32_t Max;                   // Maximum encoder counter value
+    float Kv;                       // Velocity compensation gain (m/(s*pulses))
 } calibration_t;
 
 // Device firmware info struct

@@ -53,7 +53,7 @@ GpHz = c2d (GpHs, Ts, 'zoh')*(z^-1)
 GpHw = d2c (GpHz, 'tustin');
 
 % Gc(w) - w domain
-Gcw = zpk(90*tf([1 0.315],[1 20]))
+Gcw = zpk(116.04*tf([1 0.0006049],[1 1882e-7]))
 
 % Conversion to z domain - Including the unit delay that was in GpHz
 Gcz = c2d (Gcw, Ts, 'tustin')*(z^-1)
@@ -63,7 +63,7 @@ num = cell2mat(num)
 den = cell2mat(den)
 
 % Backwards way - Starting from experimental
-Gcz_experimental = (88.2630882352941*z -88.20750) / (z^2 - 0.8*z);
+Gcz_experimental = (116.040048*z - 116.039908) / (z^2 - 1*z);
 Gcw_experimental = minreal(d2c(Gcz_experimental/(z^-1), 'tustin'))
 
 %% PERFORMANCE ANALISYS

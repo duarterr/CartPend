@@ -1,20 +1,23 @@
 %% PENDULUM MODEL VALIDATION
 % Renan Duarte - 30/04/2024
 
+%% INITIAL SETUP
+
+% Set format to long engineering notation for more precise output
 format long eng;
-clear all;
-close all;
-clc;
+clear all;  % Clear all variables from the workspace
+close all;  % Close all figure windows
+clc;        % Clear command window
 
-% Search stuff also in this folder
-addpath ('./Datasources/');
-addpath ('./Functions/');
-addpath ('./Results/');
+% Add folders containing data, functions, and results to the MATLAB path
+addpath ('./Datasources/');  % Folder for data sources
+addpath ('./Functions/');    % Folder for custom functions
+addpath ('./Results/');      % Folder for saving results
 
-% Dialog popup - Save results
+% Dialog popup to ask user if they want to save the results
 OptSave = SavePopUp;
 
-% Start counting time
+% Start a timer to measure the execution time of the script
 tic;
 
 %%
@@ -22,7 +25,7 @@ tic;
 STEPPER_STEPS_REV = 200;
 STEPPER_MICROSTEPS = 32;
 STEPPER_PPR = (STEPPER_STEPS_REV*STEPPER_MICROSTEPS);
-STEPPER_PD = 0.0136;
+STEPPER_PD = 0.0143859964587984;
 STEPPER_KV = (STEPPER_PPR/(pi*STEPPER_PD));
 
 %% PENDULUM DATA
@@ -37,42 +40,59 @@ end
 
 m = Pendulum.m;
 l = Pendulum.l;
-F = Pendulum.F;
+kd = Pendulum.kd;
+kdr = Pendulum.kdr;
+kc = Pendulum.kc;
+
+Params = [m, l, kd, kdr, kc];
 
 %% EXPERIMENTAL DATA
 
 % Import data
 try    
-    Exp = readtable('Steps_Cart_Acc.xlsx', 'Sheet', 1);
+    Experimental_Data = readtable('Steps_Cart_Acc.xlsx', 'Sheet', 1);
 catch
     fprintf ("Experimental data not found. Aborting \n\n");    
     return;
 end 
 
 % Get data
-Time = Exp.Time;
-Accel = Exp.Accel;
-CurrentPPS = Exp.CurrentPPS;
-Pos = Exp.Pos;
-PosDot = Exp.PosDot;
-PosDotCalc = gradient(Pos(:)) ./ gradient(Time(:)); 
-Theta = Exp.Theta;
-ThetaDot = Exp.ThetaDot;
-ThetaDotCalc = gradient(Theta(:)) ./ gradient(Time(:)); 
+Time = Experimental_Data.Time;
+Accel = Experimental_Data.Accel;
+CurrentPPS = Experimental_Data.CurrentPPS;
+Pos = Experimental_Data.Pos;
+PosDot = Experimental_Data.PosDot;
+Theta = Experimental_Data.Theta;
+ThetaDot = Experimental_Data.ThetaDot;
 
+% Adjust theta values to oscillate around zero
+for i = 1:numel(Theta)
+    if (Theta(i) < 0)
+        Theta(i) = Theta(i) + pi;  % Shift negative values up by π
+    elseif (Theta(i) > 0)
+        Theta(i) = Theta(i) - pi;  % Shift positive values down by π
+    end
+end
+
+% Further adjustment to make theta oscillate around -π
+Theta = Theta - pi;
+
+% Estimate some of the parameters to compare
+PosDotCalc = gradient(Pos(:)) ./ gradient(Time(:)); 
+ThetaDotCalc = gradient(Theta(:)) ./ gradient(Time(:)); 
 AccelCalc = gradient(CurrentPPS(:) / STEPPER_KV) ./ gradient(Time(:));
 PPSCalc = cumtrapz(Time,Accel)*STEPPER_KV;
 
-% Initial conditions
-xi = [Pos(1); PosDot(1); Theta(1); ThetaDot(1)];
+% Initial state vector
+State0 = [Pos(1); PosDot(1); Theta(1); ThetaDot(1)];
 
 % Clear variables
 clear -regexp ^Exp;
 
-%% NON LINEAR MODEL
+%% SOLVE NON LINEAR MODEL
 
 % Solve non linear model
-[~, States] = ode45(@(t,y)PendCart(t, y, Time, Accel, m, l, F), Time, xi);
+[~, States] = ode45(@(SolverTime, State)CartPendModel(SolverTime, State, Params, Accel, Time), Time, State0);
 
 % Get data for model
 PosM = States(:,1);
@@ -90,7 +110,7 @@ clf(1);
 subplot(321);
 plot(Time ,Accel, 'DisplayName', 'Experimental');
 hold on;
-plot(Time, AccelCalc, 'DisplayName', 'Model');
+plot(Time, AccelCalc, 'DisplayName', 'Calc');
 grid on;
 xlim([0 Time(end)]);
 xlabel('Time [s]');

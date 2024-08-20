@@ -62,8 +62,8 @@ Rgb Led;
 // Stepper object - From Stepper_TivaC class
 Stepper Stepper;
 
-// LQR object - From LQR_TivaC class
-Lqr LqrController;
+// LQR object - From StateFeedback_TivaC class
+StateFeedback LqrController;
 
 // PID object - From Pid_TivaC class
 Pid PidController;
@@ -82,14 +82,14 @@ volatile cart_t Cart = cart_t_default;
 volatile pendulum_t Pendulum = pendulum_t_default;
 
 // Calibration variables
-volatile calibration_t CalT = {.Status = CAL_PENDING, .Progress = 0, .Offset = 0, .Max = ENCODER_T_PPR};
-volatile calibration_t CalX = {.Status = CAL_PENDING, .Progress = 0, .Offset = 1000, .Max = ENCODER_X_PPR};
+volatile calibration_t CalT = {.Status = CAL_PENDING, .Progress = 0, .Offset = 0, .Max = ENCODER_T_PPR, .Kv = 1};
+volatile calibration_t CalX = {.Status = CAL_PENDING, .Progress = 0, .Offset = 1000, .Max = ENCODER_X_PPR, .Kv = ENCODER_X_INITIAL_KV};
 
 // Control mode
 volatile control_mode_t ControlMode = CONTROL_OFF;
 
-// Cart position reference - Shaddow value
-volatile float PosRefShaddow = 0;
+// Cart position reference - Shadow value
+volatile float PosRefShadow = 0;
 
 // Global counters
 volatile uint32_t SysTickCounter = 0;
@@ -120,7 +120,8 @@ void CartUpdateState ()
     Cart.Pos = ((float)X_VALUE_TOTAL_M/CalX.Max)*((int32_t)EncoderX.GetPos() - CalX.Offset) - X_VALUE_ABS_M;
 
     // Calculate cart velocity
-    Cart.Vel = (((X_VALUE_TOTAL_M * EncoderX.GetVel()) / CalX.Max) * ENCODER_X_FREQUENCY) * EncoderX.GetDir();
+    //Cart.Vel = (((float)EncoderX.GetVel() / ENCODER_X_FREQUENCY) * (X_VALUE_TOTAL_M / CalX.Max)) * EncoderX.GetDir();
+    Cart.Vel = CalX.Kv * EncoderX.GetVel() * EncoderX.GetDir();
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -129,11 +130,16 @@ void CartUpdateState ()
 
 void CartCalibratePos ()
 {
+    // Aux variables
+    uint32_t EncoderVelPulses = 0;
+    uint32_t EncoderVelCounter = 0;
+
+    // Set calibration variables
     CalX.Progress = 0;
     CalX.Status = CAL_RUNNING;
 
     // Start stepper - Backwards direction
-    Stepper.Move (-0.2, 0.25);
+    Stepper.Move (-STEPPER_VEL_CAL, STEPPER_ACC_MAX);
 
     // Move until home switch triggers
     while (Stepper.GetEnable());
@@ -142,15 +148,24 @@ void CartCalibratePos ()
     EncoderX.SetPos(CalX.Offset);
 
     // Start stepper - Forward direction
-    Stepper.Move (0.2, 0.25);
+    Stepper.Move (STEPPER_VEL_CAL, STEPPER_ACC_MAX);
 
     // Move until end switch triggers
     while (Stepper.GetEnable())
+    {
+        EncoderVelPulses += EncoderX.GetVel();
+        EncoderVelCounter++;
+
         CalX.Progress = (uint32_t)(EncoderX.GetPos() * 200)/ENCODER_X_PPR;
+    }
 
     // Define encoder maximum counter value - Without offset
     CalX.Max = EncoderX.GetPos() - CalX.Offset;
 
+    // Calculate average velocity pulse counter and determine Kv
+    CalX.Kv = (float)STEPPER_VEL_CAL / ((float)EncoderVelPulses / EncoderVelCounter);
+
+    // Set calirbation flag
     CalX.Status = CAL_DONE;
 }
 
@@ -406,8 +421,8 @@ void DeviceUpdateLcd()
         uint8_t xP = (uint8_t)Aux::Map (Cart.Pos, -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
         Display.DrawFilledRectangle(xP - 2, 11, xP + 2, 15, LCD_PIXEL_ON);
 
-        // Shaddow reference mark
-        xP = (uint8_t)Aux::Map (PosRefShaddow, -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
+        // Shadow reference mark
+        xP = (uint8_t)Aux::Map (PosRefShadow, -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
         Display.DrawPixel(xP, 12, LCD_PIXEL_XOR);
         Display.DrawPixel(xP, 13, LCD_PIXEL_OFF);
 
@@ -457,18 +472,18 @@ void DeviceUpdateButton1 ()
             // Single click
             if (EventData.Counter == 1)
             {
-                PosRefShaddow -= 0.025;
+                PosRefShadow -= 0.025;
 
-                if (PosRefShaddow < -0.2)
-                PosRefShaddow = -0.2;
+                if (PosRefShadow < -0.2)
+                PosRefShadow = -0.2;
             }
 
             // Double click
             else if (EventData.Counter == 2)
             {
-                LqrController.SetReference(0, PosRefShaddow);
-                PidController.SetReference(PosRefShaddow);
-                LeadController.SetReference(PosRefShaddow);
+                LqrController.SetReference(0, PosRefShadow);
+                PidController.SetReference(PosRefShadow);
+                LeadController.SetReference(PosRefShadow);
             }
         }
 
@@ -510,18 +525,18 @@ void DeviceUpdateButton2 ()
             // Single click
             if (EventData.Counter == 1)
             {
-                PosRefShaddow += 0.025;
+                PosRefShadow += 0.025;
 
-                if (PosRefShaddow > 0.2)
-                    PosRefShaddow = 0.2;
+                if (PosRefShadow > 0.2)
+                    PosRefShadow = 0.2;
             }
 
             // Double click
             else if (EventData.Counter == 2)
             {
-                LqrController.SetReference(0, PosRefShaddow);
-                PidController.SetReference(PosRefShaddow);
-                LeadController.SetReference(PosRefShaddow);
+                LqrController.SetReference(0, PosRefShadow);
+                PidController.SetReference(PosRefShadow);
+                LeadController.SetReference(PosRefShadow);
             }
         }
 
@@ -553,6 +568,8 @@ void DeviceUpdateButton2 ()
 
 void DeviceUpdateControl()
 {
+    static uint16_t StoppedCounter = 0;
+
     // Control is on
     if (ControlMode != CONTROL_OFF)
     {
@@ -570,34 +587,48 @@ void DeviceUpdateControl()
         else if (ControlMode == CONTROL_LQR && (Aux::FastFabs(Pendulum.Pos) < 0.2) && (CalT.Status == CAL_DONE))
         {
             LqrController.SetState(0, Cart.Pos);
-            LqrController.SetState(1, Cart.Vel);
+            LqrController.SetState(1, -0.1522);
             LqrController.SetState(2, Pendulum.Pos);
-            LqrController.SetState(3, Pendulum.Vel);
+            LqrController.SetState(3, Pendulum.Vel + 2.4390103583687*Cart.Vel);
 
             Unxt = LqrController.Compute();
         }
 
-        // Velocity control (PID good with Kp 10 Ki 0 Kd 1)
-//        if (Aux::FastFabs(Unxt) >= Stepper.GetMinVel())
+        // Velocity control
+        if (Aux::FastFabs(Unxt) >= Stepper.GetMinVel())
+        {
             Stepper.Move(Unxt, STEPPER_ACC_MAX);
+            StoppedCounter = 0;
+        }
+        else
+            StoppedCounter++;
 
-        // TODO: INCLUIR ESSA LOGICA DENTRO DA BIBLIOTECA DO STEPPER
 //        else
-//            Stepper.Stop();
-
-//        // Acceleration control
-//        if (Unxt != 0)
 //        {
-//            float FinalVelocity = (Unxt < 0 ? -STEPPER_VEL_MAX : STEPPER_VEL_MAX);
-//            float Acceleration = Aux::FastFabs(Unxt);
+//            // Acceleration control
+//            if (Unxt != 0)
+//            {
+//                float FinalVelocity = (Unxt < 0 ? -STEPPER_VEL_MAX : STEPPER_VEL_MAX);
+//                float Acceleration = Aux::FastFabs(Unxt);
 //
-//            Stepper.Move(FinalVelocity, Acceleration);
+////                if ((Aux::FastFabs(Unxt) < 0.1) && (Aux::FastFabs(Stepper.GetCurrentVel()) < 0.005))
+////                    Stepper.Move(0, Acceleration);
+////                else
+//                    Stepper.Move(FinalVelocity, Acceleration);
+//            }
 //        }
     }
 
-    // Control is off
-    else if (Stepper.GetEnable())
+    else
+        StoppedCounter++;
+
+    // Cart is stopped for more than 1 second. Turn coils off to avoid heating
+    if (StoppedCounter > CONTROL_LOOP_FREQUENCY)
+    {
+        // TODO: Maybe put the driver to sleep avoids vibrations
         Stepper.Stop();
+        StoppedCounter = 0;
+    }
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -619,7 +650,7 @@ void IsrSysTick ()
         CartUpdateState();
 
         // Check for stalls - Done here because we need updated cart data
-        if (Stepper.CheckForStall(EncoderX.GetPos(), 200))
+        if (Stepper.CheckForStall(Cart.Vel, 0.1, ENCODER_X_FREQUENCY))
             Stepper.Stop();
 
         EncoderXCounter = 0;
@@ -751,7 +782,7 @@ void main ()
     // --------------------------------------------------------------------------------------------------- //
 
     // Define LQR gains and references
-    float Gains[4] = {-7.071068, -8.212938, -49.663068, -10.818448};
+    float Gains[4] = {0, 0, -26, 0};
     float Refs[4] = {0};
 
     // Initialize LQR controller
@@ -771,7 +802,7 @@ void main ()
     // --------------------------------------------------------------------------------------------------- //
 
     // Define lead gains, reference and limits
-    LeadController.SetGains(0.96, 10, -10);
+    LeadController.SetGains(0.96, 10, -9.8);
     LeadController.SetReference(0);
     LeadController.SetLimits(-STEPPER_VEL_MAX, STEPPER_VEL_MAX);
 
@@ -851,6 +882,25 @@ void main ()
 
     while (1)
     {
+//        Stepper.Move (-0.1, STEPPER_ACC_MAX);
+//        while (Cart.Pos > -0.15);
+//        Stepper.Move (0.1, STEPPER_ACC_MAX);
+//        while (Cart.Pos < 0.10);
+//
+//        Stepper.Move (-STEPPER_VEL_MAX, STEPPER_ACC_MAX);
+//        while (Cart.Pos > -0.08);
+//        Stepper.Move (STEPPER_VEL_MAX, STEPPER_ACC_MAX);
+//        while (Cart.Pos < 0.08);
+
+//        SysCtlDelay(10000000);
+//        Stepper.Move (-STEPPER_VEL_MAX, 1);   // Acelera na direção negativa
+//        SysCtlDelay(5000000);                 // Delay ajustado para permitir que o motor atinja a velocidade
+//        Stepper.Move (STEPPER_VEL_MAX, 1);    // Inverte a direção
+//        SysCtlDelay(10000000);                 // Delay dobrado para garantir que o motor desacelere, pare, e acelere na direção oposta
+//        Stepper.Move (0, 1);                  // Para o motor
+//        SysCtlDelay(15000000);
+//        Stepper.Stop();                       // Chama o comando Stop
+//        while(1);
     }
 }
 

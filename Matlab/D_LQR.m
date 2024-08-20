@@ -29,35 +29,36 @@ end
 
 m = Pendulum.m;
 l = Pendulum.l;
-F = Pendulum.F;
+kd = Pendulum.kd;
+kdr = Pendulum.kdr;
+kc = Pendulum.kc;
 
 %% CART MODEL - ALREADY LINEAR
 Ac = [0 1; 0 0];
-Bc = [0 1]';
+Bc = [1.115 0]';
 Cc = [1 0];
 Dc = 0;
 
 [num, den] = ss2tf(Ac,Bc,Cc,Dc);
-GPosU = tf(num, den)
+GPosU = minreal(tf(num, den))
 
 %% PENDULUM MODEL - LINEARIZED
 % FOR THETA = 0 (UP)
 
-Kd = 3*F(1); % Maybe need to be increased
-I = (m*l^2)/3;
 g = 9.81;
-den = m*l^2 + I;
-a = m*g*l/den;
-b = -Kd/den;
-c = -m*l/den;
+
+I = m*l^2;
+a = m*g*l/I;
+b = -kd/I;
+c = -m*l/I;
 
 Ap = [0 1; a b];
-Bp = [0 c]';
+Bp = [-1/l 0]';
 Cp = [1 0];
 Dp = 0;
 
 [num, den] = ss2tf(Ap,Bp,Cp,Dp);
-GThetaU = tf(num, den)
+GThetaU = minreal(tf(num, den))
 
 %% COMPLETE SYSTEM
 
@@ -66,19 +67,12 @@ B = [Bc; Bp];
 C = [Cc zeros(1,2); zeros(1,2) Cp];
 D = [Dc; Dp];
 
-%% DISCRETE SYSTEM
-
-% Sampling time
-Ts = 1/200;
-
-[Ad Bd Cd Dd] = ssdata(c2d(ss(A,B,C,D), Ts));
-
 %% LQR DESIGN
 
 Q = [5 0 0 0;
-    0 1 0 0;
-    0 0 5 0;
-    0 0 0 0.1];
+    0 0 0 0;
+    0 0 10 0;
+    0 0 0 0];
 
 R = 0.1;
 
@@ -86,6 +80,7 @@ K = lqr(A,B,Q,R)
 
 %% PERFORMANCE EVALUATION
 
+Ts = 1/200;
 Time = 0:Ts:5;
 xi = [0.2; 0; -0.2; 0];
 ref = [0; 0; 0; 0];

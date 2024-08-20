@@ -1,0 +1,5 @@
+Removed Member From Class: ClassName=Schematic Member=P?
+Change Component Designator: OldDesignator=CN4 NewDesignator=CN5
+Change Component Designator: OldDesignator=CN5 NewDesignator=CN3
+Change Component Designator: OldDesignator=P? NewDesignator=CN4
+Added Member To Class: ClassName=Schematic Member=Component CN5 Header 5X2
