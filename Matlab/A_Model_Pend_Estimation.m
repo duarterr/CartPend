@@ -91,9 +91,9 @@ l = g * Tosc0^2 / (4 * pi^2);
 % kc  -> Coulomb constant force [N] 
 
 m = 0.146;
-l = l;
-kd = [1e-12 1e-1];
-kdr = [1e-12 1e-1];
+l = 0.479;
+kd = 266.885830984858e-006;
+kdr = 4.28381090081854e-006;
 kc = [1e-12 1e-1];
 
 % Set the lower and upper bounds for the optimization
@@ -141,7 +141,7 @@ ThetaDotM = States(:, 4);
 [p f] = pspectrum(Theta - mean(Theta), Time);
 [pM fM] = pspectrum(ThetaM - mean(ThetaM), Time);
 
-% Calculate the decay envelope for the experimental data and model
+% Calculate a decay envelope for the experimental data and model
 Env = envelope(Theta, numel(Theta), 'analytic');
 EnvM = envelope(ThetaM, numel(ThetaM), 'analytic');
 

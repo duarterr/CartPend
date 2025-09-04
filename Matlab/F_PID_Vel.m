@@ -11,19 +11,6 @@ Bode_Opt.FreqUnits = 'Hz';
 Bode_Opt.Grid = 'on';
 %Bode_Opt.PhaseWrapping = 'on';
 
-
-%% SYSTEM MODELS
-
-% Import data
-try
-    load('./Results/CartVel.mat');    
-catch
-    fprintf ("Cart data not found. Aborting \n\n");    
-    return;
-end
-
-GPos = Cart.GPos;
-
 %% SYSTEM CHARACTERISTICS
 
 fs = 500;       % Sampling frequency
@@ -36,7 +23,7 @@ z = zpk('z', Ts);
 %% SYSTEM MODEL
 
 % Gp (s domain)
-Gps = GPos;
+Gps = tf([2.566 0],[1 0.01203 -25.17]);
 
 % Filter
 Hs = 1;%2*pi*fc /(s + 2*pi*fc);

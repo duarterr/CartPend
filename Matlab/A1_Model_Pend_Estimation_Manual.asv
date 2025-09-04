@@ -1,0 +1,299 @@
+%% PENDULUM MODEL ESTIMATION - OPTIMIZATION
+% FREE OSCILLATIONS - NO INPUT
+% Renan Duarte - 16/08/2024
+% Modificado para comparar dados experimentais, modelo manual e modelo otimizado
+
+% Weigths of frequency and decay error can be adjusted in the minimization
+% funcion at the end of the file
+
+%% INITIAL SETUP
+
+% Set format to long engineering notation for more precise output
+format long eng;
+clear all;  % Clear all variables from the workspace
+close all;  % Close all figure windows
+clc;        % Clear command window
+
+% Add folders containing data, functions, and results to the MATLAB path
+addpath ('./Datasources/');  % Folder for data sources
+addpath ('./Functions/');    % Folder for custom functions
+addpath ('./Results/');      % Folder for saving results
+
+% Constant for gravitational acceleration [m/s^2]
+g = 9.81;
+
+% Start a timer to measure the execution time of the script
+tic;
+
+%% EXPERIMENTAL DATA
+
+% Import experimental data from an Excel file
+Experimental_Data = readtable('A_Model_Pend_Estimation.xlsx', 'Sheet', 1);
+
+% Extract parameters from the data table
+Time = Experimental_Data.Time;
+Accel = Experimental_Data.Accel;
+Pos = Experimental_Data.Pos;
+PosDot = Experimental_Data.PosDot;
+Theta = Experimental_Data.Theta;
+ThetaDot = Experimental_Data.ThetaDot;
+
+% Adjust theta values to oscillate around zero
+for i = 1:numel(Theta)
+    if (Theta(i) < 0)
+        Theta(i) = Theta(i) + pi;  % Shift negative values up by π
+    elseif (Theta(i) > 0)
+        Theta(i) = Theta(i) - pi;  % Shift positive values down by π
+    end
+end
+
+% Further adjustment to make theta oscillate around -π
+Theta = Theta - pi;
+
+% If no input is given, make it a single value to speedup calculations
+if sum(Accel) == 0
+    Accel = 0;
+end
+
+% Initial state vector
+State0 = [Pos(1); PosDot(1); Theta(1); ThetaDot(1)];
+
+%% FINDING OSCILLATION PEAKS
+
+% Find the peaks in the theta data
+[Peaks, Idx] = findpeaks(Theta);
+TimePeaks = Time(Idx);  % Get the corresponding time points of the peaks
+
+% Filter peaks based on a threshold around -π to exclude outliers
+IdxValid = (abs(Peaks + pi) < 0.15) & (abs(Peaks + pi) > 0.1);
+
+% Keep only the valid peaks and their corresponding times
+Peaks = Peaks(IdxValid);
+TimePeaks = TimePeaks(IdxValid);
+
+% Estimate the undumped period of oscillation (Tosc0) from the time between peaks
+Tosc0 = mean(diff(TimePeaks));
+
+%% EQUIVALENT IDEAL PENDULUM ESTIMATION
+
+% Estimate the effective length of the pendulum using the period Tosc0
+l_estimated = g * Tosc0^2 / (4 * pi^2);
+
+%% PLOT 1: EXPERIMENTAL DATA
+figure(1);
+clf(1);
+plot(Time, Theta, 'b-', 'DisplayName', 'Dados Experimentais');
+grid on;
+xlim([0, Time(end)]);
+title('Resposta Experimental do Pêndulo', 'FontSize', 14);
+xlabel('Tempo (s)', 'FontSize', 12);
+ylabel('Ângulo Theta (rad)', 'FontSize', 12);
+legend('Location', 'best');
+set(gca, 'FontSize', 11);
+
+%% MODELO MANUAL (DEFINIDO PELO USUÁRIO)
+% Assumindo que existe um modelo manual na workspace
+% Se não existir, defina parâmetros padrão
+
+if exist('ParamsManual', 'var')
+    fprintf('Usando parâmetros manuais definidos na workspace\n');
+    m_manual = ParamsManual(1);
+    l_manual = ParamsManual(2);
+    kd_manual = ParamsManual(3);
+    kdr_manual = ParamsManual(4);
+    kc_manual = ParamsManual(5);
+else
+    fprintf('Parâmetros manuais não encontrados. Usando valores padrão.\n');
+    % Parâmetros padrão para o modelo manual
+    m_manual = 0.146;
+    l_manual = l_estimated;
+    kd_manual = 0.01;   % Damping linear moderado
+    kdr_manual = 0.001; % Damping quadrático baixo
+    kc_manual = 0.001;  % Coulomb friction baixo
+    
+    ParamsManual = [m_manual, l_manual, kd_manual, kdr_manual, kc_manual];
+end
+
+% Resolver modelo manual
+[~, StatesManual] = ode45(@(SolverTime, State)CartPendModel(SolverTime, State, ParamsManual, Accel, Time), Time, State0);
+ThetaManual = StatesManual(:, 3);
+
+%% PLOT 2: COMPARAÇÃO EXPERIMENTAL vs MODELO MANUAL
+figure(2);
+clf(2);
+plot(Time, Theta, 'b-', 'LineWidth', 2, 'DisplayName', 'Dados Experimentais');
+hold on;
+plot(Time, ThetaManual, 'r--', 'LineWidth', 2, 'DisplayName', 'Modelo Manual');
+grid on;
+xlim([0, Time(end)]);
+title('Comparação: Experimental vs Modelo Manual', 'FontSize', 14);
+xlabel('Tempo (s)', 'FontSize', 12);
+ylabel('Ângulo Theta (rad)', 'FontSize', 12);
+legend('Location', 'best');
+set(gca, 'FontSize', 11);
+
+% Calcular erro do modelo manual
+R2_manual = R2_coeff(Theta, ThetaManual);
+fprintf('Coeficiente R² do modelo manual: %.4f\n', R2_manual);
+
+% Save manual model comparison
+if OptSave
+    saveas(gcf, './Results/Manual_Model_Comparison.png');
+    fprintf('Comparação com modelo manual salva em: ./Results/Manual_Model_Comparison.png\n');
+end
+
+%% MODELO OTIMIZADO
+% Assumindo que existe um modelo otimizado na workspace
+% Se não existir, usar estimação básica
+
+if exist('ParamsOpt', 'var')
+    fprintf('Usando parâmetros otimizados definidos na workspace\n');
+    m_opt = ParamsOpt(1);
+    l_opt = ParamsOpt(2);
+    kd_opt = ParamsOpt(3);
+    kdr_opt = ParamsOpt(4);
+    kc_opt = ParamsOpt(5);
+else
+    fprintf('Parâmetros otimizados não encontrados. Usando estimação simples.\n');
+    % Estimação simples baseada nos dados experimentais
+    m_opt = 0.146;
+    l_opt = l_estimated;
+    kd_opt = 0.05;    % Damping mais alto que o manual
+    kdr_opt = 0.002;  % Damping quadrático ligeiramente maior
+    kc_opt = 0.0005;  % Coulomb friction menor
+    
+    ParamsOpt = [m_opt, l_opt, kd_opt, kdr_opt, kc_opt];
+end
+
+% Resolver modelo otimizado
+[~, StatesOpt] = ode45(@(SolverTime, State)CartPendModel(SolverTime, State, ParamsOpt, Accel, Time), Time, State0);
+ThetaOpt = StatesOpt(:, 3);
+
+%% PLOT 3: COMPARAÇÃO COMPLETA (EXPERIMENTAL vs MANUAL vs OTIMIZADO)
+figure(3);
+clf(3);
+plot(Time, Theta, 'b-', 'DisplayName', 'Dados Experimentais');
+hold on;
+plot(Time, ThetaManual, 'r--',  'DisplayName', 'Modelo Manual');
+plot(Time, ThetaOpt, 'g:', 'LineWidth', 2, 'DisplayName', 'Modelo Otimizado');
+grid on;
+xlim([0, Time(end)]);
+title('Comparação Completa: Experimental vs Modelos', 'FontSize', 14);
+xlabel('Tempo (s)', 'FontSize', 12);
+ylabel('Ângulo Theta (rad)', 'FontSize', 12);
+legend('Location', 'best');
+set(gca, 'FontSize', 11);
+
+%% ANÁLISE DE FREQUÊNCIA E DECAY
+% Calcular frequências para todos os modelos
+[p_exp, f_exp] = pspectrum(Theta - mean(Theta), Time);
+[p_manual, f_manual] = pspectrum(ThetaManual - mean(ThetaManual), Time);
+[p_opt, f_opt] = pspectrum(ThetaOpt - mean(ThetaOpt), Time);
+
+% Calcular envelopes de decay
+Env_exp = envelope(Theta, numel(Theta), 'analytic');
+Env_manual = envelope(ThetaManual, numel(ThetaManual), 'analytic');
+Env_opt = envelope(ThetaOpt, numel(ThetaOpt), 'analytic');
+
+%% PLOT 4: ANÁLISE DETALHADA (FREQUÊNCIA E DECAY)
+figure(4);
+clf(4);
+
+% Subplot para frequências
+subplot(2, 1, 1);
+plot(f_exp, p_exp, 'b-', 'LineWidth', 2, 'DisplayName', 'Experimental');
+hold on;
+plot(f_manual, p_manual, 'r--', 'LineWidth', 2, 'DisplayName', 'Manual');
+plot(f_opt, p_opt, 'g:', 'LineWidth', 2, 'DisplayName', 'Otimizado');
+grid on;
+xlim([1/Tosc0 - 0.5, 1/Tosc0 + 0.5]);
+title('Análise de Frequência', 'FontSize', 12);
+xlabel('Frequência (Hz)', 'FontSize', 11);
+ylabel('Potência', 'FontSize', 11);
+legend('Location', 'best');
+set(gca, 'FontSize', 10);
+
+% Subplot para decay
+subplot(2, 1, 2);
+plot(Time, Env_exp, 'b-', 'LineWidth', 2, 'DisplayName', 'Experimental');
+hold on;
+plot(Time, Env_manual, 'r--', 'LineWidth', 2, 'DisplayName', 'Manual');
+plot(Time, Env_opt, 'g:', 'LineWidth', 2, 'DisplayName', 'Otimizado');
+grid on;
+xlim([0, Time(end)]);
+title('Análise de Decaimento (Envelope)', 'FontSize', 12);
+xlabel('Tempo (s)', 'FontSize', 11);
+ylabel('Amplitude Theta (rad)', 'FontSize', 11);
+legend('Location', 'best');
+set(gca, 'FontSize', 10);
+
+% Save frequency and decay analysis
+if OptSave
+    saveas(gcf, './Results/Frequency_Decay_Analysis.png');
+    fprintf('Análise de frequência e decaimento salva em: ./Results/Frequency_Decay_Analysis.png\n');
+end
+
+%% RESUMO DOS RESULTADOS
+fprintf('\n=== RESUMO DOS RESULTADOS ===\n');
+fprintf('Período experimental estimado: %.4f s\n', Tosc0);
+fprintf('Comprimento efetivo estimado: %.4f m\n', l_estimated);
+fprintf('\nParâmetros do Modelo Manual:\n');
+fprintf('  m = %.6f kg\n', m_manual);
+fprintf('  l = %.6f m\n', l_manual);
+fprintf('  kd = %.6f Ns/m\n', kd_manual);
+fprintf('  kdr = %.6f Ns²/m²\n', kdr_manual);
+fprintf('  kc = %.6f N\n', kc_manual);
+fprintf('  R² = %.4f\n', R2_manual);
+fprintf('\nParâmetros do Modelo Otimizado:\n');
+fprintf('  m = %.6f kg\n', m_opt);
+fprintf('  l = %.6f m\n', l_opt);
+fprintf('  kd = %.6f Ns/m\n', kd_opt);
+fprintf('  kdr = %.6f Ns²/m²\n', kdr_opt);
+fprintf('  kc = %.6f N\n', kc_opt);
+fprintf('  R² = %.4f\n', R2_opt);
+fprintf('\nMelhoria do modelo otimizado: %.2f%%\n', ((R2_opt - R2_manual) / R2_manual) * 100);
+
+%% END
+
+% Stop the timer and display the total execution time
+Time_Duration = toc;
+fprintf("\nCálculos completados em %.2f segundos \n\n", Time_Duration);
+
+%% CORRELATION BETWEEN TWO DATA SETS
+
+function R2 = R2_coeff(data, data_fit)
+    % Compute the R^2 correlation coefficient between two data sets
+    
+    % Total sum of squares (variance of the data)
+    sum_of_squares = sum((data - mean(data)).^2);
+    
+    % Residual sum of squares (variance of the residuals)
+    sum_of_squares_of_residuals = sum((data - data_fit).^2);
+    
+    % R^2 is the proportion of the variance explained by the model
+    R2 = 1 - sum_of_squares_of_residuals / sum_of_squares;
+end
+
+%% MINIMIZATION FUNCTION (mantida para compatibilidade)
+
+function Error = MinimizationFunction(Params, Input, Time, State0, ThetaExp)
+    % Solve the pendulum's ODE with the given parameters
+    [~, States] = ode45(@(SolverTime, State)CartPendModel(SolverTime, State, Params, Input, Time), Time, State0);
+    
+    % Extract the model's predicted angular displacement
+    ThetaM = States(:, 3);
+
+%    Error = 1 - R2_coeff (ThetaExp, ThetaM);
+    
+    % Calculate the frequencies of the oscillations for the experimental data and model
+    [p, ~] = pspectrum(ThetaExp - mean(ThetaExp), Time);
+    [pM, ~] = pspectrum(ThetaM - mean(ThetaM), Time);
+
+    % Calculate the decay envelope for the experimental data and model
+    Env = envelope(ThetaExp, numel(ThetaExp), 'analytic');
+    EnvM = envelope(ThetaM, numel(ThetaM), 'analytic');
+    
+    % Calculate the total error as the sum of errors in peak times and envelopes
+    Error = 0.1*(1 - R2_coeff(p, pM)) + ...
+            0.9*(1 - R2_coeff(Env(100:end-100), EnvM(100:end-100)));
+end
