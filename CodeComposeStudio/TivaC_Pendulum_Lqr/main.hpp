@@ -85,8 +85,8 @@ extern "C"
 // RGB LED functions
 #include "Rgb_TivaC.hpp"
 
-// Stepper functions
-#include "Stepper_TivaC.hpp"
+// Motor functions
+#include "DCMotor_TivaC.hpp"
 
 // Auxiliary functions
 #include "Aux_Functions.hpp"
@@ -137,7 +137,7 @@ extern "C"
 
 // Application timming
 #define TIMER_FREQUENCY         1000                   // Systick timer frequency in Hz
-#define CONTROL_LOOP_FREQUENCY  200                    // Control loop frequency in Hz
+#define CONTROL_LOOP_FREQUENCY  100                    // Control loop frequency in Hz
 
 // LCD
 #define LCD_REFRESH_FREQUENCY   10                     // LCD refresh frequency in Hz
@@ -165,24 +165,16 @@ extern "C"
 #define ENCODER_X_INITIAL_KV    0.002272                // Initial KV value. Will be adjusted after calibration
 
 // RGB LED
-#define RGB_PWM_FREQ            1000                   // RGB LED PWM frequency in Hz
-#define RGB_REFRESH_FREQUENCY   10                     // RGB LED refresh frequency in Hz
+#define RGB_PWM_FREQ            1000                    // RGB LED PWM frequency in Hz
+#define RGB_REFRESH_FREQUENCY   10                      // RGB LED refresh frequency in Hz
 
-// Stepper
-#define STEPPER_STEPS_REV       200                                     // Number of steps per revolution
-#define STEPPER_MICROSTEPS      32                                      // Number of pulses per step
-#define STEPPER_PPR             (STEPPER_STEPS_REV*STEPPER_MICROSTEPS)  // Total pulses per revolution
-#define STEPPER_PD              0.0143859964587984F                     // Pulley pitch diameter (m) - 0.01273 nominal
-#define STEPPER_KV              (STEPPER_PPR/(PI*STEPPER_PD))           // Conversion factor between PPS and m/s
-#define STEPPER_PPS_MAX         200000                                  // Maximum velocity (pulses per second)
-#define STEPPER_VEL_MAX         ((float)STEPPER_PPS_MAX/STEPPER_KV)     // Maximum velocity (m/s)
-#define STEPPER_ACC_MAX         10                                      // Maximum acceleration (m/s^2)
-#define STEPPER_REFRESH_FREQ    1000                                    // Velocity control frequency
-#define STEPPER_VEL_CAL         0.25                                    // Velocity during axis calibration
+// Motor
+#define MOTOR_VEL_CAL           0.25                     // Velocity during axis calibration [0.0-1.0]
 
 // X-axis
 #define X_VALUE_TOTAL_M         0.4037F                 // Maximum travel distance in m
 #define X_VALUE_ABS_M           (X_VALUE_TOTAL_M/2)     // Axis limits in m (-X_VALUE_ABS_M to X_VALUE_ABS_M)
+
 // Theta-axis
 #define T_VALUE_MAX_RAD         (2*PI)                  // Maximum angle in radians
 #define T_VALUE_ABS_MAX         PI                      // Axis limits in radians (-T_VALUE_ABS_MAX to T_VALUE_ABS_MAX)
@@ -273,30 +265,28 @@ extern "C"
 #define RGB_G_PIN               GPIO_PIN_3              // Green LED pin
 #define RGB_B_PIN               GPIO_PIN_2              // Blue LED pin
 
-// Stepper
-#define STEPPER_PWM_PERIPH      SYSCTL_PERIPH_PWM0      // Peripheral for PWM module
-#define STEPPER_PWM_BASE        PWM0_BASE               // Base address for PWM module
-#define STEPPER_PWM_GEN         PWM_GEN_1               // PWM generator
-#define STEPPER_PWM_OUT         PWM_OUT_3               // PWM output
-#define STEPPER_PWM_OUT_BIT     PWM_OUT_3_BIT           // PWM output bit
-#define STEPPER_STEP_PERIPH     SYSCTL_PERIPH_GPIOB     // Peripheral for step pin
-#define STEPPER_STEP_BASE       GPIO_PORTB_BASE         // Base address for step pin
-#define STEPPER_STEP_PIN        GPIO_PIN_5              // Step pin number
-#define STEPPER_STEP_PIN_MUX    GPIO_PB5_M0PWM3         // Step pin mux configuration
-#define STEPPER_DIR_PERIPH      SYSCTL_PERIPH_GPIOB     // Peripheral for direction pin
-#define STEPPER_DIR_BASE        GPIO_PORTB_BASE         // Base address for direction pin
-#define STEPPER_DIR_PIN         GPIO_PIN_1              // Direction pin number
-#define STEPPER_EN_PERIPH       SYSCTL_PERIPH_GPIOB     // Peripheral for enable pin
-#define STEPPER_EN_BASE         GPIO_PORTB_BASE         // Base address for enable pin
-#define STEPPER_EN_PIN          GPIO_PIN_0              // Enable pin number
-#define STEPPER_LIMSTART_PERIPH SYSCTL_PERIPH_GPIOE     // Peripheral for start limit switch
-#define STEPPER_LIMSTART_BASE   GPIO_PORTE_BASE         // Base address for start limit switch
-#define STEPPER_LIMSTART_PIN    GPIO_PIN_2              // Start limit switch pin number
-#define STEPPER_LIMEND_PERIPH   SYSCTL_PERIPH_GPIOE     // Peripheral for end limit switch
-#define STEPPER_LIMEND_BASE     GPIO_PORTE_BASE         // Base address for end limit switch
-#define STEPPER_LIMEND_PIN      GPIO_PIN_3              // End limit switch pin number
-#define STEPPER_TIMER_PERIPH    SYSCTL_PERIPH_WTIMER0   // Peripheral for timer module
-#define STEPPER_TIMER_BASE      WTIMER0_BASE            // Base address for timer module
+// Motor
+#define MOTOR_PWM_PERIPH        SYSCTL_PERIPH_PWM0      // Peripheral for PWM module
+#define MOTOR_PWM_BASE          PWM0_BASE               // Base address for PWM module
+#define MOTOR_PWM_GEN           PWM_GEN_1               // PWM generator
+#define MOTOR_PWM_OUT           PWM_OUT_3               // PWM output
+#define MOTOR_PWM_OUT_BIT       PWM_OUT_3_BIT           // PWM output bit
+#define MOTOR_PWM_PIN_PERIPH    SYSCTL_PERIPH_GPIOB     // Peripheral for PWM pin
+#define MOTOR_PWM_PIN_BASE      GPIO_PORTB_BASE         // Base address for PWM pin
+#define MOTOR_PWM_PIN           GPIO_PIN_5              // PWM pin number
+#define MOTOR_PWM_PIN_MUX       GPIO_PB5_M0PWM3         // PWM pin mux configuration
+#define MOTOR_EN_CW_PERIPH      SYSCTL_PERIPH_GPIOB     // Peripheral for enable CW pin
+#define MOTOR_EN_CW_BASE        GPIO_PORTB_BASE         // Base address for enable CW pin
+#define MOTOR_EN_CW_PIN         GPIO_PIN_1              // Enable CW pin number
+#define MOTOR_EN_CCW_PERIPH     SYSCTL_PERIPH_GPIOB     // Peripheral for enable CCW pin
+#define MOTOR_EN_CCW_BASE       GPIO_PORTB_BASE         // Base address for enable CCW pin
+#define MOTOR_EN_CCW_PIN        GPIO_PIN_0              // Enable CCW pin number
+#define MOTOR_LIMSTART_PERIPH   SYSCTL_PERIPH_GPIOE     // Peripheral for start limit switch
+#define MOTOR_LIMSTART_BASE     GPIO_PORTE_BASE         // Base address for start limit switch
+#define MOTOR_LIMSTART_PIN      GPIO_PIN_2              // Start limit switch pin number
+#define MOTOR_LIMEND_PERIPH     SYSCTL_PERIPH_GPIOE     // Peripheral for end limit switch
+#define MOTOR_LIMEND_BASE       GPIO_PORTE_BASE         // Base address for end limit switch
+#define MOTOR_LIMEND_PIN        GPIO_PIN_3              // End limit switch pin number
 
 // ------------------------------------------------------------------------------------------------------- //
 // Enumerations
@@ -547,51 +537,41 @@ const encoder_config_t EncoderX_Config = {
     }
 };
 
-// Define stepper motor configuration parameters
-const stepper_config_t Stepper_Config = {
-    .Pwm = {
-        .Periph = STEPPER_PWM_PERIPH,
-        .Base = STEPPER_PWM_BASE,
-        .Gen = STEPPER_PWM_GEN,
-        .Out = STEPPER_PWM_OUT,
-        .OutBit = STEPPER_PWM_OUT_BIT
-    },
-    .Step = {
-        .Periph = STEPPER_STEP_PERIPH,
-        .Base = STEPPER_STEP_BASE,
-        .Pin = STEPPER_STEP_PIN,
-        .PinMux = STEPPER_STEP_PIN_MUX
-    },
-    .Dir = {
-        .Periph = STEPPER_DIR_PERIPH,
-        .Base = STEPPER_DIR_BASE,
-        .Pin = STEPPER_DIR_PIN
-    },
-    .En = {
-        .Periph = STEPPER_EN_PERIPH,
-        .Base = STEPPER_EN_BASE,
-        .Pin = STEPPER_EN_PIN
-    },
-    .LimStart = {
-        .Periph = STEPPER_LIMSTART_PERIPH,
-        .Base = STEPPER_LIMSTART_BASE,
-        .Pin = STEPPER_LIMSTART_PIN
-    },
-    .LimEnd = {
-        .Periph = STEPPER_LIMEND_PERIPH,
-        .Base = STEPPER_LIMEND_BASE,
-        .Pin = STEPPER_LIMEND_PIN
-    },
-    .Params = {
-        .VelMax = STEPPER_VEL_MAX,
-        .AccMax = STEPPER_ACC_MAX,
-        .Kv = STEPPER_KV,
-        .VelUpdateFrequency = TIMER_FREQUENCY
-    },
-    .Timer = {
-        .Periph = STEPPER_TIMER_PERIPH,
-        .Base = STEPPER_TIMER_BASE
-    }
+// Define motor configuration parameters
+const dcmotor_config_t Motor_Config = {
+   .Pwm = {
+       .Periph = MOTOR_PWM_PERIPH,
+       .Base = MOTOR_PWM_BASE,
+       .Gen = MOTOR_PWM_GEN,
+       .Out = MOTOR_PWM_OUT,
+       .OutBit = MOTOR_PWM_OUT_BIT
+   },
+   .PwmPin = {
+       .Periph = MOTOR_PWM_PIN_PERIPH,
+       .Base = MOTOR_PWM_PIN_BASE,
+       .Pin = MOTOR_PWM_PIN,
+       .PinMux = MOTOR_PWM_PIN_MUX
+   },
+   .EnCW = {
+       .Periph = MOTOR_EN_CW_PERIPH,
+       .Base = MOTOR_EN_CW_BASE,
+       .Pin = MOTOR_EN_CW_PIN
+   },
+   .EnCCW = {
+       .Periph = MOTOR_EN_CCW_PERIPH,
+       .Base = MOTOR_EN_CCW_BASE,
+       .Pin = MOTOR_EN_CCW_PIN
+   },
+   .LimStart = {
+       .Periph = MOTOR_LIMSTART_PERIPH,
+       .Base = MOTOR_LIMSTART_BASE,
+       .Pin = MOTOR_LIMSTART_PIN
+   },
+   .LimEnd = {
+       .Periph = MOTOR_LIMEND_PERIPH,
+       .Base = MOTOR_LIMEND_BASE,
+       .Pin = MOTOR_LIMEND_PIN
+   }
 };
 
 // ------------------------------------------------------------------------------------------------------- //

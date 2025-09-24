@@ -46,6 +46,16 @@
 			<locationURI>LIBS_LOCATION/Source/Button_TivaC.hpp</locationURI>
 		</link>
 		<link>
+			<name>Components/DCMotor_TivaC.cpp</name>
+			<type>1</type>
+			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/DCMotor_TivaC.cpp</locationURI>
+		</link>
+		<link>
+			<name>Components/DCMotor_TivaC.hpp</name>
+			<type>1</type>
+			<locationURI>PARENT-3-PROJECT_LOC/CodeComposerStudio%20Libs/Source/DCMotor_TivaC.hpp</locationURI>
+		</link>
+		<link>
 			<name>Components/Encoder_TivaC.cpp</name>
 			<type>1</type>
 			<locationURI>LIBS_LOCATION/Source/Encoder_TivaC.cpp</locationURI>

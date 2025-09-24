@@ -59,8 +59,8 @@ Encoder EncoderT, EncoderX;
 // RGB LED object - From Rgb_TivaC class
 Rgb Led;
 
-// Stepper object - From Stepper_TivaC class
-Stepper Stepper;
+// Motor object - From DCMotor_TivaC class
+DCMotor Motor;
 
 // Cart PID controller object - From Pid_TivaC class
 Pid ControllerCartPid;
@@ -145,20 +145,20 @@ void CartCalibratePos ()
     CalX.Progress = 0;
     CalX.Status = CAL_RUNNING;
 
-    // Start stepper - Backwards direction
-    Stepper.Move (-STEPPER_VEL_CAL, 0.25);
+    // Start motor - Backwards direction
+    Motor.SetVelocity (-MOTOR_VEL_CAL);
 
     // Move until home switch triggers
-    while (Stepper.GetEnable());
+    while (Motor.GetEnable());
 
     // Set encoder counter - Add offset because cart can move past limit switch trigger point
     EncoderX.SetPos(CalX.Offset);
 
-    // Start stepper - Forward direction
-    Stepper.Move (STEPPER_VEL_CAL, 0.25);
+    // Start motor - Forward direction
+    Motor.SetVelocity (MOTOR_VEL_CAL);
 
     // Move until end switch triggers
-    while (Stepper.GetEnable())
+    while (Motor.GetEnable())
     {
         EncoderVelPulses += EncoderX.GetVel();
         EncoderVelCounter++;
@@ -170,7 +170,7 @@ void CartCalibratePos ()
     CalX.Max = EncoderX.GetPos() - CalX.Offset;
 
     // Calculate average velocity pulse counter and determine Kv
-    CalX.Kv = (float)STEPPER_VEL_CAL / ((float)EncoderVelPulses / EncoderVelCounter);
+    CalX.Kv = (float)MOTOR_VEL_CAL / ((float)EncoderVelPulses / EncoderVelCounter);
 
     // Set calirbation flag
     CalX.Status = CAL_DONE;
@@ -271,18 +271,7 @@ void DeviceUpdateUart()
     Serial.SendString (Aux_String);
     Serial.SendString (";");
 
-    float AccNow = 0;
-    if (Stepper.GetTargetVel() > Stepper.GetCurrentVel())
-        AccNow = Stepper.GetCurrentAcc();
-    else if (Stepper.GetTargetVel() < Stepper.GetCurrentVel())
-        AccNow = -Stepper.GetCurrentAcc();
-    Aux::F2Str(AccNow, Aux_String, 6);
-
-    Serial.SendString (Aux_String);
-    Serial.SendString (";");
-
-    ltoa ((Stepper.GetDir() == 1 ? Stepper.GetPwmFrequency() : -Stepper.GetPwmFrequency()), Aux_String, 10);
-
+    ltoa ((Motor.GetDir() == 1 ? Motor.GetVelocity() : -Motor.GetVelocity()), Aux_String, 10);
     Serial.SendString (Aux_String);
     Serial.SendString (";");
 
@@ -587,8 +576,6 @@ void DeviceUpdateButton2 ()
 
 void DeviceUpdateControl()
 {
-    static uint16_t StoppedCounter = 0;
-
     // Control is on
     if (ControlMode != CONTROL_OFF)
     {
@@ -622,37 +609,7 @@ void DeviceUpdateControl()
         }
 
         // Velocity control
-        if ((Aux::FastFabs(Unxt) >= Stepper.GetMinVel()) && (ControlMode != CONTROL_LQR_FULL))
-        {
-            Stepper.Move(Unxt, STEPPER_ACC_MAX);
-            StoppedCounter = 0;
-        }
-
-        // Acceleration control - LQR
-        else if ((ControlMode == CONTROL_LQR_FULL) && (Aux::FastFabs(Pendulum.Pos) < 0.2) && (CalT.Status == CAL_DONE))
-        {
-            float FinalVelocity = (Unxt < 0 ? -STEPPER_VEL_MAX : STEPPER_VEL_MAX);
-            float Acceleration = Aux::FastFabs(Unxt);
-
-            Stepper.Move(FinalVelocity, Acceleration);
-
-            StoppedCounter = 0;
-        }
-
-        else
-            StoppedCounter++;
-    }
-
-    // Control is off
-    else
-        StoppedCounter++;
-
-    // Cart is stopped for more than 1 second. Turn coils off to avoid heating
-    if ((StoppedCounter > 5*CONTROL_LOOP_FREQUENCY) && (Stepper.GetEnable()))
-    {
-        // TODO: Maybe put the driver to sleep avoids vibrations
-        Stepper.Stop();
-        StoppedCounter = 0;
+        Motor.SetVelocity(Unxt);
     }
 }
 
@@ -673,11 +630,6 @@ void IsrSysTick ()
     if (++EncoderXCounter >= EncoderXInterval)
     {
         CartUpdateState();
-
-        // Check for stalls - Done here because we need updated cart data
-        if (Stepper.CheckForStall(Cart.Vel, 0.1, ENCODER_X_FREQUENCY))
-            Stepper.Stop();
-
         EncoderXCounter = 0;
     }
 
@@ -796,20 +748,20 @@ void main ()
     Led.Init (&Led_Config);
 
     // --------------------------------------------------------------------------------------------------- //
-    // Configure stepper
+    // Configure motor
     // --------------------------------------------------------------------------------------------------- //
 
-    // Initialize stepper
-    Stepper.Init (&Stepper_Config);
+    // Initialize motor
+    Motor.Init (&Motor_Config);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure cart PID controller
     // --------------------------------------------------------------------------------------------------- //
 
     // Define PID gains, reference and limits
-    ControllerCartPid.SetGains(5, 0, 1);
+    ControllerCartPid.SetGains(5, 0.5, 0);
     ControllerCartPid.SetReference(0);
-    ControllerCartPid.SetLimits(-STEPPER_VEL_MAX, STEPPER_VEL_MAX);
+    ControllerCartPid.SetLimits(-1, 1);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure cart lead controller
@@ -818,7 +770,7 @@ void main ()
     // Define lead gains, reference and limits
     ControllerCartLead.SetGains(0.96, 10, -9.8);
     ControllerCartLead.SetReference(0);
-    ControllerCartLead.SetLimits(-STEPPER_VEL_MAX, STEPPER_VEL_MAX);
+    ControllerCartLead.SetLimits(-1, 1);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure pendulum PID controller
@@ -827,7 +779,7 @@ void main ()
     // Define PID gains, reference and limits
     ControllerPendPid.SetGains(-20, 0.001, -0.1);
     ControllerPendPid.SetReference(0);
-    ControllerPendPid.SetLimits(-STEPPER_VEL_MAX, STEPPER_VEL_MAX);
+    ControllerPendPid.SetLimits(-1, 1);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure LQR controller
@@ -838,7 +790,7 @@ void main ()
     float Refs[4] = {0};
 
     // Initialize LQR controller
-    ControllerFullLqr.Init (Gains, Refs, 4, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
+    ControllerFullLqr.Init (Gains, Refs, 4, -1, 1);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure Systick timer
@@ -914,28 +866,7 @@ void main ()
     // Main loop
     // --------------------------------------------------------------------------------------------------- //
 
-    while (1)
-    {
-//        Stepper.Move (-0.1, STEPPER_ACC_MAX);
-//        while (Cart.Pos > -0.15);
-//        Stepper.Move (0.1, STEPPER_ACC_MAX);
-//        while (Cart.Pos < 0.10);
-//
-//        Stepper.Move (-STEPPER_VEL_MAX, STEPPER_ACC_MAX);
-//        while (Cart.Pos > -0.08);
-//        Stepper.Move (STEPPER_VEL_MAX, STEPPER_ACC_MAX);
-//        while (Cart.Pos < 0.08);
-
-//        SysCtlDelay(10000000);
-//        Stepper.Move (-STEPPER_VEL_MAX, 1);   // Acelera na direção negativa
-//        SysCtlDelay(5000000);                 // Delay ajustado para permitir que o motor atinja a velocidade
-//        Stepper.Move (STEPPER_VEL_MAX, 1);    // Inverte a direção
-//        SysCtlDelay(10000000);                 // Delay dobrado para garantir que o motor desacelere, pare, e acelere na direção oposta
-//        Stepper.Move (0, 1);                  // Para o motor
-//        SysCtlDelay(15000000);
-//        Stepper.Stop();                       // Chama o comando Stop
-//        while(1);
-    }
+    while (1);
 }
 
 // ------------------------------------------------------------------------------------------------------- //
