@@ -61,13 +61,8 @@
 #ifndef MAIN_HPP_
 #define MAIN_HPP_
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-
 // ------------------------------------------------------------------------------------------------------- //
-// Includes
+// Cpp includes
 // ------------------------------------------------------------------------------------------------------- //
 
 // LCD functions
@@ -91,17 +86,25 @@ extern "C"
 // Auxiliary functions
 #include "Aux_Functions.hpp"
 
-// State feedback functions
+// Digital controller functions
 #include "StateFeedback_TivaC.hpp"
-
-// PID functions
 #include "Pid_TivaC.hpp"
-
-// Lead functions
 #include "Lead_TivaC.hpp"
+
+// ------------------------------------------------------------------------------------------------------- //
+// C includes
+// ------------------------------------------------------------------------------------------------------- //
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
 
 // Standard libraries
 #include <stdint.h>
+#include <math.h>
+#include <string.h>
+#include <stdlib.h>
 
 // TivaC hardware related libraries
 #include "inc/hw_memmap.h"
@@ -150,7 +153,8 @@ extern "C"
 #define BUTTON_LONG_TIMEOUT     1000                   // Button long press timeout in ms
 
 // UART
-#define UART_REFRESH_FREQUENCY  50                     // UART refresh frequency in Hz
+#define UART_TX_FREQUENCY       30                     // UART TX device status frequency
+#define UART_RX_FREQUENCY       10                     // UART RX command pooling frequency
 #define UART_BAUD_RATE          115200                 // UART baud rate
 #define UART_MODE               (UART_CONFIG_PAR_NONE | UART_CONFIG_STOP_ONE | UART_CONFIG_WLEN_8) // UART mode configuration
 
@@ -174,9 +178,9 @@ extern "C"
 #define STEPPER_PPR             (STEPPER_STEPS_REV*STEPPER_MICROSTEPS)  // Total pulses per revolution
 #define STEPPER_PD              0.0143859964587984F                     // Pulley pitch diameter (m) - 0.01273 nominal
 #define STEPPER_KV              (STEPPER_PPR/(PI*STEPPER_PD))           // Conversion factor between PPS and m/s
-#define STEPPER_PPS_MAX         200000                                  // Maximum velocity (pulses per second)
+#define STEPPER_PPS_MAX         180000                                  // Maximum velocity (pulses per second)
 #define STEPPER_VEL_MAX         ((float)STEPPER_PPS_MAX/STEPPER_KV)     // Maximum velocity (m/s)
-#define STEPPER_ACC_MAX         10                                      // Maximum acceleration (m/s^2)
+#define STEPPER_ACC_MAX         8                                       // Maximum acceleration (m/s^2)
 #define STEPPER_REFRESH_FREQ    1000                                    // Velocity control frequency
 #define STEPPER_VEL_CAL         0.25                                    // Velocity during axis calibration
 
@@ -298,6 +302,16 @@ extern "C"
 #define STEPPER_TIMER_PERIPH    SYSCTL_PERIPH_WTIMER0   // Peripheral for timer module
 #define STEPPER_TIMER_BASE      WTIMER0_BASE            // Base address for timer module
 
+// Intervals
+#define CONTROL_INTERVAL        (TIMER_FREQUENCY / CONTROL_LOOP_FREQUENCY)
+#define UART_TX_INTERVAL        (TIMER_FREQUENCY / UART_TX_FREQUENCY)
+#define UART_RX_INTERVAL        (TIMER_FREQUENCY / UART_RX_FREQUENCY)
+#define LCD_INTERVAL            (TIMER_FREQUENCY / LCD_REFRESH_FREQUENCY)
+#define RGB_INTERVAL            (TIMER_FREQUENCY / RGB_REFRESH_FREQUENCY)
+#define BUTTON_INTERVAL         (TIMER_FREQUENCY / BUTTON_SCAN_FREQUENCY)
+#define ENCODER_T_INTERVAL      (TIMER_FREQUENCY / ENCODER_T_FREQUENCY)
+#define ENCODER_X_INTERVAL      (TIMER_FREQUENCY / ENCODER_X_FREQUENCY)
+
 // ------------------------------------------------------------------------------------------------------- //
 // Enumerations
 // ------------------------------------------------------------------------------------------------------- //
@@ -317,9 +331,9 @@ typedef enum
     CONTROL_OFF,            // No control
     CONTROL_CART_PID,       // Cart PID control
     CONTROL_CART_LEAD,      // Cart Lead control
-    CONTROL_PID_PEND,       // Pendudum PID control
-    CONTROL_PID_FULL,       // PID control - Cart and pendulum
-    CONTROL_LQR_FULL,       // LQR control - Cart and pendulum
+    CONTROL_CART_SF,        // Cart State Feedback control
+    CONTROL_PEND_SF,        // Pendulum State Feedback control
+    CONTROL_FULL_LQR,       // LQR control - Cart and pendulum
     sizeof_control_mode_t   // Do not change.
 } control_mode_t;
 

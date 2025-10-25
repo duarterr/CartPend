@@ -35,7 +35,7 @@ kc = Pendulum.kc;
 
 %% CART MODEL - ALREADY LINEAR
 Ac = [0 1; 0 0];
-Bc = [1.115 0]';
+Bc = [0 1]';
 Cc = [1 0];
 Dc = 0;
 
@@ -69,12 +69,8 @@ D = [Dc; Dp];
 
 %% LQR DESIGN
 
-Q = [5 0 0 0;
-    0 0 0 0;
-    0 0 10 0;
-    0 0 0 0];
-
-R = 0.1;
+Q = diag([0.8333, 0.3079, 100, 20]);
+R = 0.25;
 
 K = lqr(A,B,Q,R)
 
@@ -82,11 +78,12 @@ K = lqr(A,B,Q,R)
 
 Ts = 1/200;
 Time = 0:Ts:5;
-xi = [0.2; 0; -0.2; 0];
+xi = [0.1; 0; -0.1; 0];
 ref = [0; 0; 0; 0];
 
-% Solve non linear model
-[~, States] = ode45(@(t,y)PendCart(t, y, Time, -K*(y-ref), m, l, F), Time, xi);
+% Solve non linear model in closed loop
+ParamsOpt = [m l kd kdr kc];
+[~, States] = ode45(@(t, y) CartPendModel(t, y, ParamsOpt, -K*(y-ref), t), Time, xi);
 
 % Get data for model
 PosM = States(:,1);
@@ -95,7 +92,7 @@ ThetaM = States(:,3);
 ThetaDotM = States(:,4);
 
 % Estimate acceleration input
-Accel = gradient(PosDotM(:)) ./ gradient(Time(:)); 
+Accel = -K * (States' - ref);
 
 Time_Duration = toc;
 fprintf ("Calculations took %.2f seconds \n\n", Time_Duration);

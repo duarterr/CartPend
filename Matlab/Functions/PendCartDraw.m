@@ -33,13 +33,11 @@ plot([x px],[y py],'k','LineWidth',2)
 % Massa pendulo
 rectangle('Position',[px-mr/2, py-mr/2, mr, mr],'Curvature',1,'FaceColor',[.1 0.1 1])
 
-% set(gca,'YTick',[])
-% set(gca,'XTick',[])
 xlim([-0.3 0.3]);
 ylim([-0.6 0.6]);
 title (sprintf("%s - %.2fs", plotTitle, t));
 grid on;
-%set(gcf,'Position',[100 550 1000 400])
-% box off
+xlabel('Position [m]');
+set(gca, 'YTick', []); % Remove y-axis tick marks and values
 drawnow
 hold off

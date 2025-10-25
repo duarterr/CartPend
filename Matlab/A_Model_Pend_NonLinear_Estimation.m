@@ -79,7 +79,7 @@ Tosc0 = mean(diff(TimePeaks));
 %% EQUIVALENT IDEAL PENDULUM ESTIMATION
 
 % Estimate the effective length of the pendulum using the period Tosc0
-l = g * Tosc0^2 / (4 * pi^2);
+l = g * Tosc0^2 / (4 * pi^2)
 
 %% PENDULUM PARAMETERS - RANGES OR SINGLE VALUES
 
@@ -91,9 +91,9 @@ l = g * Tosc0^2 / (4 * pi^2);
 % kc  -> Coulomb constant force [N] 
 
 m = 0.146;
-l = 0.479;
-kd = 266.885830984858e-006;
-kdr = 4.28381090081854e-006;
+l = [0.389 0.5];
+kd = [100e-6 500e-6];
+kdr = [1e-6 10e-6];
 kc = [1e-12 1e-1];
 
 % Set the lower and upper bounds for the optimization
@@ -246,6 +246,6 @@ function Error = MinimizationFunction(Params, Input, Time, State0, ThetaExp)
     EnvM = envelope(ThetaM, numel(ThetaM), 'analytic');
     
     % Calculate the total error as the sum of errors in peak times and envelopes
-    Error = 0.1*(1 - R2_coeff(p, pM)) + ...
-            0.9*(1 - R2_coeff(Env(100:end-100), EnvM(100:end-100)));
+    Error = 0.9*(1 - R2_coeff(p, pM)) + ...
+            0.1*(1 - R2_coeff(Env(100:end-100), EnvM(100:end-100)));
 end
