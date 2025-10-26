@@ -165,19 +165,15 @@ extern "C"
 
 // Encoder - X
 #define ENCODER_X_FREQUENCY     200                     // Encoder scan frequency
-#define ENCODER_X_PPR           83300                   // Encoder maximum counter value
-#define ENCODER_X_INITIAL_KV    0.002272                // Initial KV value. Will be adjusted after calibration
+#define ENCODER_X_MAX           40600                   // Encoder maximum counter value. Can be adjusted with calibration
+#define ENCODER_X_KV            477.565938866364        // Conversion factor between PPS and m/s. Can be adjusted with calibration
 
 // RGB LED
 #define RGB_PWM_FREQ            1000                   // RGB LED PWM frequency in Hz
 #define RGB_REFRESH_FREQUENCY   10                     // RGB LED refresh frequency in Hz
 
 // Stepper
-#define STEPPER_STEPS_REV       200                                     // Number of steps per revolution
-#define STEPPER_MICROSTEPS      32                                      // Number of pulses per step
-#define STEPPER_PPR             (STEPPER_STEPS_REV*STEPPER_MICROSTEPS)  // Total pulses per revolution
-#define STEPPER_PD              0.0143859964587984F                     // Pulley pitch diameter (m) - 0.01273 nominal
-#define STEPPER_KV              (STEPPER_PPR/(PI*STEPPER_PD))           // Conversion factor between PPS and m/s
+#define STEPPER_KV              152665.797                              // Conversion factor between PPS and m/s (Steps_Rev * Microsteps / (pi*Pulley_pitch_diameter)). Can be adjusted with calibration
 #define STEPPER_PPS_MAX         180000                                  // Maximum velocity (pulses per second)
 #define STEPPER_VEL_MAX         ((float)STEPPER_PPS_MAX/STEPPER_KV)     // Maximum velocity (m/s)
 #define STEPPER_ACC_MAX         8                                       // Maximum acceleration (m/s^2)
@@ -187,6 +183,7 @@ extern "C"
 // X-axis
 #define X_VALUE_TOTAL_M         0.4037F                 // Maximum travel distance in m
 #define X_VALUE_ABS_M           (X_VALUE_TOTAL_M/2)     // Axis limits in m (-X_VALUE_ABS_M to X_VALUE_ABS_M)
+
 // Theta-axis
 #define T_VALUE_MAX_RAD         (2*PI)                  // Maximum angle in radians
 #define T_VALUE_ABS_MAX         PI                      // Axis limits in radians (-T_VALUE_ABS_MAX to T_VALUE_ABS_MAX)
@@ -556,7 +553,7 @@ const encoder_config_t EncoderX_Config = {
         .Config = ENCODER_X_CFG
     },
     .Params = {
-        .PPR = ENCODER_X_PPR,
+        .PPR = 2*ENCODER_X_MAX,
         .ScanFreq = ENCODER_X_FREQUENCY
     }
 };

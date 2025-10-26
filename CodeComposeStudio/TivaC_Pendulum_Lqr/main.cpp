@@ -22,14 +22,23 @@
 // Update cart state based on encoder readings
 void CartUpdateState ();
 
-// Calibrate cart X position limits
-void CartCalibratePos ();
-
 // Update pendulum state based on encoder readings
 void PendulumUpdateState ();
 
+// Move cart to home position (-X_VALUE_ABS_M)
+void CalibrationCartGoHome ();
+
+// Calibrate cart X position limits
+void CalibrationCartPos ();
+
+// Calibrate cart velocity constant - Must be called with the pendulum detached
+void CalibrationCartVel ();
+
+// Calibrate motor velocity constant - Must be called with the pendulum detached
+void CalibrationMotorVel ();
+
 // Calibrate pendulum angle
-void PendulumCalibrateAngle ();
+void CalibrationPendulumPos ();
 
 // UART RX callback
 void UartRxCallback(char received_char);
@@ -110,7 +119,7 @@ volatile pendulum_t Pendulum = pendulum_t_default;
 
 // Calibration variables
 volatile calibration_t CalT = {.Status = CAL_PENDING, .Progress = 0, .Offset = 0, .Max = ENCODER_T_PPR, .Kv = 1};
-volatile calibration_t CalX = {.Status = CAL_PENDING, .Progress = 0, .Offset = 1000, .Max = ENCODER_X_PPR, .Kv = ENCODER_X_INITIAL_KV};
+volatile calibration_t CalX = {.Status = CAL_PENDING, .Progress = 0, .Offset = 1000, .Max = ENCODER_X_MAX, .Kv = ENCODER_X_KV};
 
 // Control mode
 volatile control_mode_t ControlMode = CONTROL_OFF;
@@ -136,53 +145,7 @@ void CartUpdateState ()
     Cart.Pos = ((float)X_VALUE_TOTAL_M/CalX.Max)*((int32_t)EncoderX.GetPos() - CalX.Offset) - X_VALUE_ABS_M;
 
     // Calculate cart velocity
-    //Cart.Vel = (((float)EncoderX.GetVel() / ENCODER_X_FREQUENCY) * (X_VALUE_TOTAL_M / CalX.Max)) * EncoderX.GetDir();
-    Cart.Vel = CalX.Kv * EncoderX.GetVel() * EncoderX.GetDir();
-}
-
-// ------------------------------------------------------------------------------------------------------- //
-// Calibrate cart X position limits
-// ------------------------------------------------------------------------------------------------------- //
-
-void CartCalibratePos ()
-{
-    // Aux variables
-    uint32_t EncoderVelPulses = 0;
-    uint32_t EncoderVelCounter = 0;
-
-    // Set calibration variables
-    CalX.Progress = 0;
-    CalX.Status = CAL_RUNNING;
-
-    // Start stepper - Backwards direction
-    Stepper.Move (-STEPPER_VEL_CAL, 0.25);
-
-    // Move until home switch triggers
-    while (Stepper.GetEnable());
-
-    // Set encoder counter - Add offset because cart can move past limit switch trigger point
-    EncoderX.SetPos(CalX.Offset);
-
-    // Start stepper - Forward direction
-    Stepper.Move (STEPPER_VEL_CAL, 0.25);
-
-    // Move until end switch triggers
-    while (Stepper.GetEnable())
-    {
-        EncoderVelPulses += EncoderX.GetVel();
-        EncoderVelCounter++;
-
-        CalX.Progress = (uint32_t)(EncoderX.GetPos() * 200)/ENCODER_X_PPR;
-    }
-
-    // Define encoder maximum counter value - Without offset
-    CalX.Max = EncoderX.GetPos() - CalX.Offset;
-
-    // Calculate average velocity pulse counter and determine Kv
-    CalX.Kv = (float)STEPPER_VEL_CAL / ((float)EncoderVelPulses / EncoderVelCounter);
-
-    // Set calibration flag
-    CalX.Status = CAL_DONE;
+    Cart.Vel = (EncoderX.GetVel() / CalX.Kv) * EncoderX.GetDir();
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -202,10 +165,262 @@ void PendulumUpdateState ()
 }
 
 // ------------------------------------------------------------------------------------------------------- //
+// Move cart to home position (-X_VALUE_ABS_M)
+// ------------------------------------------------------------------------------------------------------- //
+
+void CalibrationCartGoHome ()
+{
+    // Set calibration variables
+    CalX.Progress = 0;
+    CalX.Status = CAL_RUNNING;
+
+    // Start stepper - Backwards direction
+    Stepper.Move (-STEPPER_VEL_CAL, 0.25);
+
+    // Move until home switch triggers
+    while (Stepper.GetEnable());
+
+    // Set encoder counter - Add offset because cart can move past limit switch trigger point
+    EncoderX.SetPos(CalX.Offset);
+
+    // Set calibration flag
+    CalX.Status = CAL_DONE;
+}
+
+// ------------------------------------------------------------------------------------------------------- //
+// Calibrate cart X position limits
+// ------------------------------------------------------------------------------------------------------- //
+
+void CalibrationCartPos ()
+{
+    // Set calibration variables
+    CalX.Progress = 0;
+    CalX.Status = CAL_RUNNING;
+
+    // Start stepper - Backwards direction
+    Stepper.Move (-STEPPER_VEL_CAL, 0.25);
+
+    // Move until home switch triggers
+    while (Stepper.GetEnable());
+
+    // Set encoder counter - Add offset because cart can move past limit switch trigger point
+    EncoderX.SetPos(CalX.Offset);
+
+    // Start stepper - Forward direction
+    Stepper.Move (STEPPER_VEL_CAL, 0.25);
+
+    // Move until end switch triggers
+    while (Stepper.GetEnable())
+        CalX.Progress = (uint32_t)(EncoderX.GetPos() * 100)/ENCODER_X_MAX;
+
+    // Define encoder maximum counter value - Without offset
+    CalX.Max = EncoderX.GetPos() - CalX.Offset;
+
+    // Set calibration flag
+    CalX.Status = CAL_DONE;
+}
+
+// ------------------------------------------------------------------------------------------------------- //
+// Calibrate cart velocity constant - Must be called with the pendulum detached
+// ------------------------------------------------------------------------------------------------------- //
+
+void CalibrationCartVel ()
+{
+    const uint8_t NUM_ITERATIONS = 3;  // Number of calibration runs
+    const float VEL_MULTIPLIERS[] = {0.25, 0.625, 1};  // Different velocities to test
+
+    float KvEncoder[NUM_ITERATIONS] = {};
+
+    for (uint8_t IterationCounter = 0; IterationCounter < NUM_ITERATIONS; IterationCounter++)
+    {
+        // Initial homing - Forward direction to end switch
+        Stepper.Move (STEPPER_VEL_CAL, 0.25);
+        while (Stepper.GetEnable());
+
+        // Start stepper - Backward direction
+        Stepper.Move (-VEL_MULTIPLIERS[IterationCounter], STEPPER_ACC_MAX);
+
+        // Wait for speed to stabilise
+        while (Stepper.GetCurrentVel() != Stepper.GetTargetVel());
+
+        // Capture start values
+        uint32_t PosStart = EncoderX.GetPos();
+        uint32_t TickStart = SysTickCounter;
+        uint32_t EncoderVelSum = 0;
+        uint32_t SampleCounter = 0;
+
+        // Collect samples until 90% of course
+        while ((EncoderX.GetPos() > (CalX.Max / 10)) && (Stepper.GetEnable()))
+        {
+            EncoderVelSum += EncoderX.GetVel();
+            SampleCounter++;
+        }
+
+        // Capture end values
+        uint32_t PosEnd = EncoderX.GetPos();
+        uint32_t TickEnd = SysTickCounter;
+
+        // Stop motor
+        Stepper.Move (0, STEPPER_ACC_MAX);
+        while (Stepper.GetCurrentVel() != 0);
+
+        // Calculate Kv for backward run
+        if (SampleCounter > 0)
+        {
+            float AverageEncoderVel = (float)EncoderVelSum / SampleCounter;
+            float DeltaPos = (float)(PosStart - PosEnd) * X_VALUE_TOTAL_M / CalX.Max;
+            float DeltaT = (float)(TickEnd - TickStart) / TIMER_FREQUENCY;
+            float RealVel = DeltaPos / DeltaT;
+            KvEncoder[IterationCounter] = AverageEncoderVel / RealVel;
+        }
+
+        // Move slowly to backward end switch
+        Stepper.Move (-STEPPER_VEL_CAL, 0.25);
+        while (Stepper.GetEnable());
+
+        // Start stepper - Forward direction
+        Stepper.Move (VEL_MULTIPLIERS[IterationCounter], STEPPER_ACC_MAX);
+
+        // Wait for speed to stabilise
+        while (Stepper.GetCurrentVel() != Stepper.GetTargetVel());
+
+        // Capture start values
+        PosStart = EncoderX.GetPos();
+        TickStart = SysTickCounter;
+        EncoderVelSum = 0;
+        SampleCounter = 0;
+
+        // Collect samples until 90% of course
+        while ((EncoderX.GetPos() < (CalX.Max * 0.9)) && (Stepper.GetEnable()))
+        {
+            EncoderVelSum += EncoderX.GetVel();
+            SampleCounter++;
+        }
+
+        // Capture end values
+        PosEnd = EncoderX.GetPos();
+        TickEnd = SysTickCounter;
+
+        // Stop motor
+        Stepper.Move (0, STEPPER_ACC_MAX);
+        while (Stepper.GetCurrentVel() != 0);
+
+        // Calculate Kv for forward run
+        if (SampleCounter > 0)
+        {
+            float AverageEncoderVel = (float)EncoderVelSum / SampleCounter;
+            float DeltaPos = (float)(PosEnd - PosStart) * X_VALUE_TOTAL_M / CalX.Max;
+            float DeltaT = (float)(TickEnd - TickStart) / TIMER_FREQUENCY;
+            float RealVel = DeltaPos / DeltaT;
+            KvEncoder[IterationCounter] = AverageEncoderVel / RealVel;
+        }
+    }
+
+    // Calculate average Kv
+    float KvEncoderSum = 0;
+    for (uint8_t IterationCounter = 0; IterationCounter < NUM_ITERATIONS; IterationCounter++)
+        KvEncoderSum += KvEncoder[IterationCounter];
+
+    CalX.Kv = KvEncoderSum / NUM_ITERATIONS;
+}
+
+// ------------------------------------------------------------------------------------------------------- //
+// Calibrate motor velocity constant - Must be called with the pendulum detached
+// ------------------------------------------------------------------------------------------------------- //
+
+void CalibrationMotorVel ()
+{
+    const uint8_t NUM_ITERATIONS = 3;
+    const float VEL_MULTIPLIERS[] = {0.25, 0.625, 1};
+    float StepperKv[NUM_ITERATIONS * 2] = {};
+    uint8_t KvCounter = 0;
+
+    for (uint8_t IterationCounter = 0; IterationCounter < NUM_ITERATIONS; IterationCounter++)
+    {
+        // Initial homing - Forward direction to end switch
+        Stepper.Move (STEPPER_VEL_CAL, 0.25);
+        while (Stepper.GetEnable());
+
+        // Start stepper - Backward direction at test velocity
+        Stepper.Move (-VEL_MULTIPLIERS[IterationCounter], STEPPER_ACC_MAX);
+
+        // Wait for speed to stabilise
+        while (Stepper.GetCurrentVel() != Stepper.GetTargetVel());
+
+        uint32_t EncoderVelSum = 0;
+        uint64_t PwmSum = 0;
+        uint32_t SampleCounter = 0;
+
+        // Collect samples until 90% of course
+        while ((EncoderX.GetPos() > (CalX.Max / 10)) && (Stepper.GetEnable()))
+        {
+            EncoderVelSum += EncoderX.GetVel();
+            PwmSum += Stepper.GetPwmFrequency();
+            SampleCounter++;
+        }
+
+        // Stop motor
+        Stepper.Move (0, STEPPER_ACC_MAX);
+        while (Stepper.GetCurrentVel() != 0);
+
+        // Calculate Kv for backward run
+        if (SampleCounter > 0)
+        {
+            float AverageVel = ((float)EncoderVelSum / SampleCounter) / CalX.Kv;
+            float AveragePwm = (float)PwmSum / SampleCounter;
+            StepperKv[KvCounter++] = AveragePwm / AverageVel;
+        }
+
+        // Move slowly to backward end switch
+        Stepper.Move (-STEPPER_VEL_CAL, 0.25);
+        while (Stepper.GetEnable());
+
+        // Start stepper - Forward direction at test velocity
+        Stepper.Move (VEL_MULTIPLIERS[IterationCounter], STEPPER_ACC_MAX);
+
+        // Wait for speed to stabilise
+        while (Stepper.GetCurrentVel() != Stepper.GetTargetVel());
+
+        EncoderVelSum = 0;
+        PwmSum = 0;
+        SampleCounter = 0;
+
+        // Collect samples until 90% of course
+        while ((EncoderX.GetPos() < (CalX.Max * 0.9)) && (Stepper.GetEnable()))
+        {
+            EncoderVelSum += EncoderX.GetVel();
+            PwmSum += Stepper.GetPwmFrequency();
+            SampleCounter++;
+        }
+
+        // Stop motor
+        Stepper.Move (0, STEPPER_ACC_MAX);
+        while (Stepper.GetCurrentVel() != 0);
+
+        // Calculate Kv for forward run
+        if (SampleCounter > 0)
+        {
+            float AverageVel = ((float)EncoderVelSum / SampleCounter) / CalX.Kv;
+            float AveragePwm = (float)PwmSum / SampleCounter;
+            StepperKv[KvCounter++] = AveragePwm / AverageVel;
+        }
+    }
+
+    // Calculate average Kv
+    float StepperKvSum = 0;
+    for (uint8_t Counter = 0; Counter < KvCounter; Counter++)
+        StepperKvSum += StepperKv[Counter];
+    float KvMotor = StepperKvSum / KvCounter;
+
+    // Update motor Kv parameter
+    Stepper.SetKv(KvMotor);
+}
+
+// ------------------------------------------------------------------------------------------------------- //
 // Calibrate pendulum angle
 // ------------------------------------------------------------------------------------------------------- //
 
-void PendulumCalibrateAngle ()
+void CalibrationPendulumPos ()
 {
     CalT.Progress = 0;
     CalT.Status = CAL_RUNNING;
@@ -1105,8 +1320,17 @@ void main ()
     // Start timer
     SysTickEnable ();
 
+    // Home cart
+    CalibrationCartGoHome ();
+
     // Calibrate cart X position limits
-    CartCalibratePos ();
+    //CalibrationCartPos ();
+
+    // Calibrate cart velocity constant - Must be called with the pendulum detached
+    //CalibrationCartVel();
+
+    // Calibrate motor velocity constant - Must be called with the pendulum detached
+    //CalibrationMotorVel();
 
     // Use controller to go to X = 0
     ControlMode = CONTROL_CART_PID;
@@ -1114,23 +1338,37 @@ void main ()
     ControlMode = CONTROL_OFF;
 
     // Calibrate pendulum angle
-    PendulumCalibrateAngle ();
+    CalibrationPendulumPos ();
 
     // --------------------------------------------------------------------------------------------------- //
     // Main loop
     // --------------------------------------------------------------------------------------------------- //
 
+    SysCtlDelay(10000000);
     while (1)
     {
-//        // Start stepper - Backwards direction
-//        Stepper.Move (-STEPPER_VEL_CAL, STEPPER_ACC_MAX);
-//
-//        SysCtlDelay(6000000);
-//
-//        // Start stepper
-//        Stepper.Move (STEPPER_VEL_CAL, STEPPER_ACC_MAX);
-//
-//        SysCtlDelay(6000000);
+        static float MoveVel = STEPPER_VEL_CAL;
+
+        // Start stepper - Backwards direction
+        Stepper.Move (-MoveVel, STEPPER_ACC_MAX);
+
+        while ((Cart.Pos > -0.05) && Stepper.GetEnable());
+
+        Stepper.Move (0, STEPPER_ACC_MAX);
+        while (Stepper.GetCurrentVel () != 0);
+
+        // Start stepper
+        Stepper.Move (MoveVel, STEPPER_ACC_MAX);
+
+        while ((Cart.Pos < 0.05) && Stepper.GetEnable());
+
+        Stepper.Move (0, STEPPER_ACC_MAX);
+        while (Stepper.GetCurrentVel () != 0);
+
+        MoveVel += 0.25;
+        if (MoveVel > STEPPER_VEL_MAX)
+            //MoveVel = STEPPER_VEL_CAL;
+            while (1);
     }
 }
 

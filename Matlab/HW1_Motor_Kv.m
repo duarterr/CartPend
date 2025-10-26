@@ -63,6 +63,213 @@ ThetaDotCalc = gradient(Theta(:)) ./ gradient(Time(:));
 % Clear variables
 clear -regexp ^Exp;
 
+%% PLOTS - EXPERIMENTAL DATA
+
+hFig = figure(1);
+set(hFig, 'units', 'normalized', 'InnerPosition',[0 0 1 1]);
+clf(1);
+
+% Cart Position
+subplot(321);
+plot(Time, Pos, 'DisplayName', 'Measured');
+grid on;
+xlim([0 Time(end)]);
+xlabel('Time [s]');
+ylabel('Position [m]');
+title('Cart Position');
+legend;
+
+% Cart Velocity
+subplot(323);
+plot(Time, PosDot, 'DisplayName', 'Measured');
+hold on;
+plot(Time, PosDotCalc, 'DisplayName', 'Calculated (gradient)');
+plot(Time, VelCmd, 'r--', 'DisplayName', 'Command');
+grid on;
+xlim([0 Time(end)]);
+xlabel('Time [s]');
+ylabel('Velocity [m/s]');
+title('Cart Velocity');
+legend;
+
+% Pendulum Angle (corrected)
+subplot(322);
+plot(Time, Theta*180/pi, 'DisplayName', 'Corrected (0° = down)');
+grid on;
+xlim([0 Time(end)]);
+xlabel('Time [s]');
+ylabel('Angle [degrees]');
+title('Pendulum Angle');
+legend;
+
+% Pendulum Angular Velocity
+subplot(324);
+plot(Time, ThetaDot, 'DisplayName', 'Measured');
+hold on;
+plot(Time, ThetaDotCalc, 'DisplayName', 'Calculated (gradient)');
+grid on;
+xlim([0 Time(end)]);
+xlabel('Time [s]');
+ylabel('Angular Velocity [rad/s]');
+title('Pendulum Angular Velocity');
+legend;
+
+% Cart Acceleration
+subplot(325);
+plot(Time, AccelCalc, 'DisplayName', 'Calculated');
+grid on;
+xlim([0 Time(end)]);
+xlabel('Time [s]');
+ylabel('Acceleration [m/s²]');
+title('Cart Acceleration');
+legend;
+
+% PWM Frequency
+subplot(326);
+plot(Time, PWM, 'DisplayName', 'PWM');
+grid on;
+xlim([0 Time(end)]);
+xlabel('Time [s]');
+ylabel('PWM Frequency [Hz]');
+title('Motor PWM');
+legend;
+
+sgtitle('Experimental Data Analysis');
+
+%%
+% Calculate motor KV by velocity segments
+MotorKv_raw = PWM ./ PosDot;
+
+% Find segments where PWM is approximately constant
+PWM_diff = [0; abs(diff(PWM))];
+segment_starts = find([true; PWM_diff > 0.01 * max(abs(PWM))]);
+segment_starts = [segment_starts; N+1];
+
+% Initialize arrays
+MotorKv_segments = [];
+segment_info = [];
+MotorKv_filtered = NaN(size(MotorKv_raw)); % For plotting
+
+for i = 1:length(segment_starts)-1
+    seg_start = segment_starts(i);
+    seg_end = segment_starts(i+1) - 1;
+    
+    % Skip short segments (transients)
+    if (seg_end - seg_start) < round(0.05 / Ts) % At least 50ms
+        continue;
+    end
+    
+    % Get segment data (exclude first and last 20% for transients)
+    margin = round(0.2 * (seg_end - seg_start));
+    seg_range = (seg_start + margin):(seg_end - margin);
+    
+    if isempty(seg_range)
+        continue;
+    end
+    
+    seg_PWM = PWM(seg_range);
+    seg_Vel = PosDot(seg_range);
+    
+    % Skip if velocity too low
+    if mean(abs(seg_Vel)) < 0.01
+        continue;
+    end
+    
+    % Calculate KV for this segment
+    seg_Kv = mean(seg_PWM) / mean(seg_Vel);
+    
+    % Store result
+    MotorKv_segments(end+1) = seg_Kv;
+    segment_info(end+1, :) = [mean(seg_PWM), mean(seg_Vel), seg_Kv];
+    
+    % Fill filtered array with segment average
+    MotorKv_filtered(seg_range) = seg_Kv;
+end
+
+% Calculate final KV statistics
+MotorKv_mean = median(MotorKv_segments);
+MotorKv_std = std(MotorKv_segments);
+
+fprintf('Motor Kv (segmented): %.2f ± %.2f Hz/(m/s)\n', MotorKv_mean, MotorKv_std);
+fprintf('Number of valid segments: %d\n', length(MotorKv_segments));
+
+figure('Position', [100 100 1200 800]);
+
+% Subplot 1: Raw Kv with noise
+subplot(3,1,1);
+plot(Time, MotorKv_raw, 'b-', 'LineWidth', 0.5);
+hold on;
+yline(MotorKv_mean, 'r--', 'LineWidth', 2, 'Label', sprintf('Mean = %.2f', MotorKv_mean));
+xlabel('Time (s)');
+ylabel('Motor Kv (Hz/(m/s))');
+title('Raw Motor Kv (with noise and discontinuities)');
+grid on;
+ylim([0 max(MotorKv_mean * 3, prctile(MotorKv_raw, 99))]); % Limit y-axis for visibility
+
+% Subplot 2: Filtered Kv (segmented)
+subplot(3,1,2);
+plot(Time, MotorKv_filtered, 'g-', 'LineWidth', 1.5);
+hold on;
+yline(MotorKv_mean, 'r--', 'LineWidth', 2, 'Label', sprintf('Mean = %.2f', MotorKv_mean));
+yline(MotorKv_mean + MotorKv_std, 'r:', 'LineWidth', 1, 'Label', sprintf('±σ = %.2f', MotorKv_std));
+yline(MotorKv_mean - MotorKv_std, 'r:', 'LineWidth', 1);
+xlabel('Time (s)');
+ylabel('Motor Kv (Hz/(m/s))');
+title('Filtered Motor Kv (steady-state segments only)');
+grid on;
+ylim([MotorKv_mean - 3*MotorKv_std, MotorKv_mean + 3*MotorKv_std]);
+
+% Subplot 3: Comparison overlay
+subplot(3,1,3);
+plot(Time, MotorKv_raw, 'b-', 'LineWidth', 0.3, 'DisplayName', 'Raw Kv');
+hold on;
+plot(Time, MotorKv_filtered, 'g-', 'LineWidth', 2, 'DisplayName', 'Filtered Kv');
+yline(MotorKv_mean, 'r--', 'LineWidth', 2, 'DisplayName', sprintf('Mean = %.2f Hz/(m/s)', MotorKv_mean));
+xlabel('Time (s)');
+ylabel('Motor Kv (Hz/(m/s))');
+title('Motor Kv: Raw vs Filtered');
+legend('Location', 'best');
+grid on;
+ylim([0 max(MotorKv_mean * 2, prctile(MotorKv_raw, 95))]); % Better visibility
+
+% Optional: Add a histogram to show distribution
+figure('Position', [100 100 800 400]);
+
+subplot(1,2,1);
+histogram(MotorKv_raw, 100, 'FaceColor', 'b', 'FaceAlpha', 0.6);
+hold on;
+xline(MotorKv_mean, 'r--', 'LineWidth', 2, 'Label', sprintf('Mean = %.2f', MotorKv_mean));
+xlabel('Motor Kv (Hz/(m/s))');
+ylabel('Count');
+title('Distribution: Raw Kv');
+grid on;
+xlim([0 prctile(MotorKv_raw, 99)]);
+
+subplot(1,2,2);
+histogram(MotorKv_segments, 20, 'FaceColor', 'g', 'FaceAlpha', 0.6);
+hold on;
+xline(MotorKv_mean, 'r--', 'LineWidth', 2, 'Label', sprintf('Mean = %.2f', MotorKv_mean));
+xlabel('Motor Kv (Hz/(m/s))');
+ylabel('Count');
+title('Distribution: Filtered Kv (per segment)');
+grid on;
+
+% Optional: Plot PWM and Velocity for context
+figure('Position', [100 100 1200 600]);
+
+subplot(2,1,1);
+plot(Time, PWM, 'b-', 'LineWidth', 1);
+ylabel('PWM Frequency (Hz)');
+title('PWM Frequency vs Time');
+grid on;
+
+subplot(2,1,2);
+plot(Time, PosDot, 'r-', 'LineWidth', 1);
+ylabel('Velocity (m/s)');
+xlabel('Time (s)');
+title('Cart Velocity vs Time');
+grid on;
+
 %% AUTOMATIC PARAMETER TUNING - IMPROVED
 
 fprintf('\n=== STARTING AUTOMATIC PARAMETER TUNING ===\n\n');
@@ -272,79 +479,6 @@ fprintf('  Position improvement (NL vs Lin): %.2f %%\n', ...
     100*(pos_rmse_Lin - pos_rmse_NL)/pos_rmse_Lin);
 fprintf('  Velocity improvement (NL vs Lin): %.2f %%\n\n', ...
     100*(vel_rmse_Lin - vel_rmse_NL)/vel_rmse_Lin);
-
-%% PLOTS - EXPERIMENTAL DATA
-
-% hFig = figure(1);
-% set(hFig, 'units', 'normalized', 'InnerPosition',[0 0 1 1]);
-% clf(1);
-% 
-% % Cart Position
-% subplot(321);
-% plot(Time, Pos, 'DisplayName', 'Measured');
-% grid on;
-% xlim([0 Time(end)]);
-% xlabel('Time [s]');
-% ylabel('Position [m]');
-% title('Cart Position');
-% legend;
-% 
-% % Cart Velocity
-% subplot(323);
-% plot(Time, PosDot, 'DisplayName', 'Measured');
-% hold on;
-% plot(Time, PosDotCalc, 'DisplayName', 'Calculated (gradient)');
-% plot(Time, VelCmd, 'r--', 'DisplayName', 'Command');
-% grid on;
-% xlim([0 Time(end)]);
-% xlabel('Time [s]');
-% ylabel('Velocity [m/s]');
-% title('Cart Velocity');
-% legend;
-% 
-% % Pendulum Angle (corrected)
-% subplot(322);
-% plot(Time, Theta*180/pi, 'DisplayName', 'Corrected (0° = down)');
-% grid on;
-% xlim([0 Time(end)]);
-% xlabel('Time [s]');
-% ylabel('Angle [degrees]');
-% title('Pendulum Angle');
-% legend;
-% 
-% % Pendulum Angular Velocity
-% subplot(324);
-% plot(Time, ThetaDot, 'DisplayName', 'Measured');
-% hold on;
-% plot(Time, ThetaDotCalc, 'DisplayName', 'Calculated (gradient)');
-% grid on;
-% xlim([0 Time(end)]);
-% xlabel('Time [s]');
-% ylabel('Angular Velocity [rad/s]');
-% title('Pendulum Angular Velocity');
-% legend;
-% 
-% % Cart Acceleration
-% subplot(325);
-% plot(Time, AccelCalc, 'DisplayName', 'Calculated');
-% grid on;
-% xlim([0 Time(end)]);
-% xlabel('Time [s]');
-% ylabel('Acceleration [m/s²]');
-% title('Cart Acceleration');
-% legend;
-% 
-% % PWM Frequency
-% subplot(326);
-% plot(Time, PWM, 'DisplayName', 'PWM');
-% grid on;
-% xlim([0 Time(end)]);
-% xlabel('Time [s]');
-% ylabel('PWM Frequency [Hz]');
-% title('Motor PWM');
-% legend;
-% 
-% sgtitle('Experimental Data Analysis');
 
 %% PLOTS - MODEL COMPARISON
 
