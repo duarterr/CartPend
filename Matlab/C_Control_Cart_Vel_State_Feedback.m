@@ -1,6 +1,33 @@
 %% CART CONTROL - STATE FEEDBACK CONTROL
-% Simplified version - Cart only
-% Modified: 2025
+% Velocity-based control for cart positioning system
+% 
+% This script designs a discrete-time state feedback controller for a cart
+% that uses velocity commands as control input.
+% 
+% Control Architecture:
+%   - State vector: x = [position; velocity]
+%   - Control input: u = velocity command (VelCmd)
+%   - Control law: u = -K*x + Kr*r (state feedback with feedforward)
+%   
+% Design Process:
+%   1. Linearized cart model is represented in state-space form
+%   2. Continuous-time model is discretized using zero-order hold (ZOH)
+%   3. Desired closed-loop poles are specified (1st or 2nd order response)
+%   4. State feedback gain K is computed using pole placement (Ackermann)
+%   5. Feedforward gain Kr is calculated for zero steady-state error
+%   
+% Validation:
+%   - The designed linear controller is tested on the nonlinear cart model
+%   - Performance metrics (settling time, overshoot, rise time) are computed
+%   - Results verify that the controller achieves desired specifications
+%
+% Model Parameters:
+%   - amax: Maximum acceleration [m/s²]
+%   - Tr: Time constant [s]
+%   - Kv: Velocity gain
+%   - Kp: Position gain
+%
+% Modified: Oct/2025
 
 format long eng;
 clear all;
@@ -15,26 +42,30 @@ addpath ('./Results/');
 % Start counting time
 tic;
 
-%% PENDULUM NON LINEAR MODEL
+%% CART NON LINEAR MODEL
 
 % Import data
 try
-    load('./Results/Pendulum.mat');    
+    load('./Results/Cart.mat');    
 catch
-    fprintf ("Pendumum data not found. Aborting \n\n");    
+    fprintf ("Cart data not found. Aborting \n\n");    
     return;
 end
 
-m = Pendulum.m;
-l = Pendulum.l;
-kd = Pendulum.kd;
-kdr = Pendulum.kdr;
-kc = Pendulum.kc;
+amax = Cart.Amax;
+Tr = Cart.Tr;
+Kv = Cart.Kv;
+Kp = Cart.Kp;
 
 %% CART MODEL
 
-Ac = [0 1; 0 0];
-Bc = [0 1]';
+% State-space representation
+Ac = [0,         Kp;
+      0,    -1/Tr];
+
+Bc = [0;
+      Kv/Tr];
+
 Cc = [1 0];
 Dc = 0;
 
@@ -52,17 +83,26 @@ Bd = sys_d.B;
 Cd = sys_d.C;
 Dd = sys_d.D;
 
+fprintf('\n=== MATRICES (Copy to firmware) ===\n\n');
+
+fprintf('float A_discrete[2][2] = {\n');
+fprintf('    {%.10ff, %.10ff},\n', Ad(1,1), Ad(1,2));
+fprintf('    {%.10ff, %.10ff}\n', Ad(2,1), Ad(2,2));
+fprintf('};\n\n');
+
+fprintf('float B_discrete[2] = {%.10ff, %.10ff};\n\n', Bd(1), Bd(2));
+
 %% POLE PLACEMENT
 
 % Option 1: First-order (no overshoot) - set oscillatory = false
 % Option 2: Second-order oscillatory - set oscillatory = true
-oscillatory = false;  % Change to false for first-order response
+oscillatory = true;  % Change to false for first-order response
 
 if oscillatory
     % OSCILLATORY RESPONSE (2nd order underdamped)
     
     % Desired specifications
-    ts_desired = 5;      % Settling time
+    ts_desired = 2;      % Settling time
     zeta = 0.2;            % Damping ratio (0 < zeta < 1)
                            % zeta = 0.3 → more oscillation
                            % zeta = 0.7 → less oscillation
@@ -155,7 +195,7 @@ fprintf('Kr = %.6f\n\n', Kr);
 %% PERFORMANCE EVALUATION
 
 % Parameters for nonlinear model
-ParamsOpt = [m l kd kdr kc];
+Params_NL = [amax, Tr, Kv, Kp];
 
 % Time vector
 Time = 0:Ts:3;
@@ -164,21 +204,22 @@ N = length(Time);
 % Step reference of 0.1m
 ref = 0.1 * ones(N, 1);
 
-% Initial state
-States = zeros(N, 4);
-States(1,:) = [0; 0; pi; 0];
+% Initial state [position; velocity]
+States = zeros(N, 2);
+States(1,:) = [0; 0];
 
-% Control input
-Accel = zeros(N, 1);
+% Control input (velocity command)
+VelCmd = zeros(N, 1);
 
-% Simulate using NONLINEAR model with control from linear design
+% Simulate using NONLINEAR model with state feedback control
 for i = 1:N-1
-    % State feedback control using only cart states [pos; vel]
-    Accel(i) = -K * States(i, 1:2)' + Kr * ref(i);
+    % State feedback control: u = -K*x + Kr*r
+    % onde u agora é a velocidade comandada
+    VelCmd(i) = -K * States(i, :)' + Kr * ref(i);
     
-    % Simulate NONLINEAR model with CartPendModel
+    % Simulate NONLINEAR model
     tspan = [Time(i), Time(i+1)];
-    [~, y_temp] = ode45(@(t, y) CartPendModel(t, y, ParamsOpt, Accel(i), Time(i)), ...
+    [~, y_temp] = ode45(@(t, y) CartNonLinearModel(t, y, Params_NL, VelCmd(i), Time(i)), ...
                         tspan, States(i,:)');
     
     States(i+1,:) = y_temp(end,:);
@@ -187,8 +228,6 @@ end
 % Extract states
 PosM = States(:,1);
 VelM = States(:,2);
-ThetaM = States(:,3);
-ThetaDotM = States(:,4);
 
 %% PERFORMANCE METRICS
 
@@ -217,8 +256,8 @@ fprintf('Rise time: %.3f s\n', rise_time);
 fprintf('Steady-state error: %.6f m\n\n', ref(end) - PosM(end));
 
 % Control effort
-max_control = max(abs(Accel));
-fprintf('Maximum control: %.3f m/s²\n\n', max_control);
+max_control = max(abs(VelCmd));
+fprintf('Maximum control: %.3f m/s\n\n', max_control);
 
 Time_Duration = toc;
 fprintf('Calculations took %.2f seconds\n', Time_Duration);
@@ -252,11 +291,11 @@ title('Cart Velocity');
 
 % Control input
 subplot(325);
-plot(Time, Accel, 'b-', 'LineWidth', 1.5);
+plot(Time, VelCmd, 'b-', 'LineWidth', 1.5);
 grid on;
 xlim([0 Time(end)]);
 xlabel('Time [s]');
-ylabel('Acceleration [m/s²]');
+ylabel('Velocity [m/s]');
 title('Control Input');
 
 % Add overall title
@@ -278,6 +317,6 @@ legend('Trajectory', 'Initial State', 'Final State', 'Equilibrium');
 % Cart animation
 subplot(3,2,[4 6]);
 for k=1:10:length(Time)
-    PendCartDraw([PosM(k) ThetaM(k)], Time(k), 'Response');
+    PendCartDraw([PosM(k) pi], Time(k), 'Response');
     %pause(Time(k+1)-Time(k));
 end

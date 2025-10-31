@@ -28,13 +28,16 @@ void PendulumUpdateState ();
 // Move cart to home position (-X_VALUE_ABS_M)
 void CalibrationCartGoHome ();
 
+// Move cart to specific position (Requires cart position to be calibrated)
+void CalibrationCartGoPosition (float Position);
+
 // Calibrate cart X position limits
 void CalibrationCartPos ();
 
-// Calibrate cart velocity constant - Must be called with the pendulum detached
+// Calibrate cart Kv - Must be called with the pendulum detached and AFTER CalibrationCartPos
 void CalibrationCartVel ();
 
-// Calibrate motor velocity constant - Must be called with the pendulum detached
+// Calibrate motor Kv - Must be called with the pendulum detached and AFTER CalibrationCartPos
 void CalibrationMotorVel ();
 
 // Calibrate pendulum angle
@@ -45,6 +48,9 @@ void UartRxCallback(char received_char);
 
 // Process received UART command
 void UartProcessCommand();
+
+// Send firmware info to serial port
+void UartSendInfo();
 
 // Send device info via UART
 void UartSendStatus();
@@ -83,6 +89,9 @@ Button Button1, Button2;
 // UART object - From Uart_TivaC class
 Uart Serial;
 
+// JSON parser object - From Json_Parser class
+JsonParser Parser;
+
 // Encoder objects - From Encoder_TivaC class
 Encoder EncoderT, EncoderX;
 
@@ -113,13 +122,11 @@ StateFeedback ControllerFullLqr;
 
 // Cart-related variables
 volatile cart_t Cart = cart_t_default;
+volatile cart_t CartFiltered = cart_t_default;
 
 // Pendulum-related variables
 volatile pendulum_t Pendulum = pendulum_t_default;
-
-// Calibration variables
-volatile calibration_t CalT = {.Status = CAL_PENDING, .Progress = 0, .Offset = 0, .Max = ENCODER_T_PPR, .Kv = 1};
-volatile calibration_t CalX = {.Status = CAL_PENDING, .Progress = 0, .Offset = 1000, .Max = ENCODER_X_MAX, .Kv = ENCODER_X_KV};
+volatile pendulum_t PendulumFiltered = pendulum_t_default;
 
 // Control mode
 volatile control_mode_t ControlMode = CONTROL_OFF;
@@ -135,33 +142,94 @@ volatile bool UartCommandReady = false;
 // Global counter
 volatile uint32_t SysTickCounter = 0;
 
+// Calibration data
+volatile calibration_master_t Cal = calibration_master_t_default;
+
+
+uint8_t Start = 0;
+
 // ------------------------------------------------------------------------------------------------------- //
 // Update cart state based on encoder readings
 // ------------------------------------------------------------------------------------------------------- //
 
-void CartUpdateState ()
+void CartUpdateState()
 {
     // Calculate cart absolute position - Remove offset added during calibration
-    Cart.Pos = ((float)X_VALUE_TOTAL_M/CalX.Max)*((int32_t)EncoderX.GetPos() - CalX.Offset) - X_VALUE_ABS_M;
+    Cart.Pos = ((float)X_VALUE_TOTAL_M/Cal.CartPos.Max)*((int32_t)EncoderX.GetPos() - Cal.CartPos.Offset) - X_VALUE_ABS_M;
 
     // Calculate cart velocity
-    Cart.Vel = (EncoderX.GetVel() / CalX.Kv) * EncoderX.GetDir();
+    Cart.Vel = (EncoderX.GetVel() / Cal.CartPos.Kv) * EncoderX.GetDir();
+
+    // Filtered velocity
+    static float CartPosLast = 0;
+    static bool FirstRun = true;
+
+    if (FirstRun)
+    {
+        CartPosLast = Cart.Pos;
+        CartFiltered.Pos = Cart.Pos;
+        CartFiltered.Vel = 0;
+        FirstRun = false;
+    }
+    else
+    {
+        CartFiltered.Pos = Cart.Pos;
+        CartFiltered.Vel = (CartFiltered.Pos - CartPosLast) * ENCODER_X_FREQUENCY;
+        CartPosLast = CartFiltered.Pos;
+    }
 }
 
 // ------------------------------------------------------------------------------------------------------- //
 // Update pendulum state based on encoder readings
 // ------------------------------------------------------------------------------------------------------- //
 
-void PendulumUpdateState ()
+void PendulumUpdateState()
 {
     // Calculate pendulum absolute position
-    Pendulum.Pos = ((float)T_VALUE_MAX_RAD/CalT.Max)*((int32_t)EncoderT.GetPos() - CalT.Offset) - T_VALUE_ABS_MAX;
+    Pendulum.Pos = ((float)T_VALUE_MAX_RAD/Cal.Theta.Max)*((int32_t)EncoderT.GetPos() - Cal.Theta.Offset) - T_VALUE_ABS_MAX;
 
     // Calculate pendulum velocity
-    float raw_vel = (((T_VALUE_MAX_RAD * EncoderT.GetVel()) / CalT.Max) * ENCODER_T_FREQUENCY) * EncoderT.GetDir();
+    Pendulum.Vel = (((T_VALUE_MAX_RAD * EncoderT.GetVel()) / Cal.Theta.Max) * ENCODER_T_FREQUENCY) * EncoderT.GetDir();
 
-    const float alpha_lpf = 1;
-    Pendulum.Vel = alpha_lpf * raw_vel + (1 - alpha_lpf) * Pendulum.Vel;
+    // Filtered velocity using unwrapped angle difference
+    static float PendulumPosLast = 0;
+    static bool FirstRun = true;
+
+    if (FirstRun)
+    {
+        PendulumPosLast = Pendulum.Pos;
+        PendulumFiltered.Pos = Pendulum.Pos;
+        PendulumFiltered.Vel = 0;
+        FirstRun = false;
+    }
+    else
+    {
+        // Calculate angular difference with unwrapping
+        float diff = Pendulum.Pos - PendulumPosLast;
+
+        // Unwrap the angle difference (shortest path)
+        while (diff > M_PI) diff -= 2.0f * M_PI;
+        while (diff < -M_PI) diff += 2.0f * M_PI;
+
+        // Calculate filtered velocity from unwrapped difference
+        PendulumFiltered.Vel = diff * ENCODER_T_FREQUENCY;
+
+        // Position filter (optional - same as raw for angles)
+        PendulumFiltered.Pos = Pendulum.Pos;
+    }
+
+    PendulumPosLast = Pendulum.Pos;
+}
+
+// ------------------------------------------------------------------------------------------------------- //
+// Update flags function
+// ------------------------------------------------------------------------------------------------------- //
+
+void CalibrationUpdateFlags()
+{
+    Cal.AllDone = (Cal.Theta.Status == CAL_DONE) && (Cal.CartPos.Status == CAL_DONE);
+    Cal.AnyRunning = (Cal.Theta.Status == CAL_RUNNING) || (Cal.CartPos.Status == CAL_RUNNING) ||
+                     (Cal.CartVel.Status == CAL_RUNNING) || (Cal.MotorVel.Status == CAL_RUNNING);
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -171,8 +239,9 @@ void PendulumUpdateState ()
 void CalibrationCartGoHome ()
 {
     // Set calibration variables
-    CalX.Progress = 0;
-    CalX.Status = CAL_RUNNING;
+    Cal.CartPos.Status = CAL_RUNNING;
+    Cal.CartPos.Progress = 0;
+    CalibrationUpdateFlags();
 
     // Start stepper - Backwards direction
     Stepper.Move (-STEPPER_VEL_CAL, 0.25);
@@ -181,10 +250,56 @@ void CalibrationCartGoHome ()
     while (Stepper.GetEnable());
 
     // Set encoder counter - Add offset because cart can move past limit switch trigger point
-    EncoderX.SetPos(CalX.Offset);
+    EncoderX.SetPos(Cal.CartPos.Offset);
 
-    // Set calibration flag
-    CalX.Status = CAL_DONE;
+    // Set calibration variables
+    Cal.CartPos.Status = CAL_DONE;
+    Cal.CartPos.Progress = 100;
+    CalibrationUpdateFlags();
+}
+
+// ------------------------------------------------------------------------------------------------------- //
+// Move cart to specific position (Requires cart position to be calibrated)
+// ------------------------------------------------------------------------------------------------------- //
+
+void CalibrationCartGoPosition (float Position)
+{
+    // Set calibration variables
+    Cal.CartPos.Status = CAL_RUNNING;
+    Cal.CartPos.Progress = 0;
+    CalibrationUpdateFlags();
+
+    float StartPos = Cart.Pos;
+    float DeltaPos = Cart.Pos - Position;
+    float TotalDistance = Aux::FastFabs(DeltaPos);
+
+    // Start stepper
+    if (DeltaPos > 0)
+    {
+        Stepper.Move(-STEPPER_VEL_CAL, 0.25);
+        while ((Cart.Pos > Position) && Stepper.GetEnable())
+        {
+            float Traveled = Aux::FastFabs(Cart.Pos - StartPos);
+            Cal.CartPos.Progress = (Traveled / TotalDistance) * 100;
+        }
+    }
+    else if (DeltaPos < 0)
+    {
+        Stepper.Move(STEPPER_VEL_CAL, 0.25);
+        while ((Cart.Pos < Position) && Stepper.GetEnable())
+        {
+            float Traveled = Aux::FastFabs(Cart.Pos - StartPos);
+            Cal.CartPos.Progress = (Traveled / TotalDistance) * 100;
+        }
+    }
+
+    // Stop stepper
+    Stepper.Stop();
+
+    // Set calibration variables
+    Cal.CartPos.Status = CAL_DONE;
+    Cal.CartPos.Progress = 100;
+    CalibrationUpdateFlags();
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -194,8 +309,9 @@ void CalibrationCartGoHome ()
 void CalibrationCartPos ()
 {
     // Set calibration variables
-    CalX.Progress = 0;
-    CalX.Status = CAL_RUNNING;
+    Cal.CartPos.Status = CAL_RUNNING;
+    Cal.CartPos.Progress = 0;
+    CalibrationUpdateFlags();
 
     // Start stepper - Backwards direction
     Stepper.Move (-STEPPER_VEL_CAL, 0.25);
@@ -204,41 +320,44 @@ void CalibrationCartPos ()
     while (Stepper.GetEnable());
 
     // Set encoder counter - Add offset because cart can move past limit switch trigger point
-    EncoderX.SetPos(CalX.Offset);
+    EncoderX.SetPos(Cal.CartPos.Offset);
 
     // Start stepper - Forward direction
     Stepper.Move (STEPPER_VEL_CAL, 0.25);
 
     // Move until end switch triggers
     while (Stepper.GetEnable())
-        CalX.Progress = (uint32_t)(EncoderX.GetPos() * 100)/ENCODER_X_MAX;
+        Cal.CartPos.Progress = (uint32_t)(EncoderX.GetPos() * 100)/ENCODER_X_MAX;
 
     // Define encoder maximum counter value - Without offset
-    CalX.Max = EncoderX.GetPos() - CalX.Offset;
+    Cal.CartPos.Max = EncoderX.GetPos() - Cal.CartPos.Offset;
 
-    // Set calibration flag
-    CalX.Status = CAL_DONE;
+    // Set calibration variables
+    Cal.CartPos.Status = CAL_DONE;
+    CalibrationUpdateFlags();
 }
 
 // ------------------------------------------------------------------------------------------------------- //
-// Calibrate cart velocity constant - Must be called with the pendulum detached
+// Calibrate cart Kv - Must be called with the pendulum detached and AFTER CalibrationCartPos
 // ------------------------------------------------------------------------------------------------------- //
 
 void CalibrationCartVel ()
 {
-    const uint8_t NUM_ITERATIONS = 3;  // Number of calibration runs
-    const float VEL_MULTIPLIERS[] = {0.25, 0.625, 1};  // Different velocities to test
+    float KvEncoder[CAL_KV_TOTAL_STEPS] = {};
 
-    float KvEncoder[NUM_ITERATIONS] = {};
+    // Set calibration variables
+    Cal.CartVel.Status = CAL_RUNNING;
+    Cal.CartVel.Progress = 0;
+    CalibrationUpdateFlags();
 
-    for (uint8_t IterationCounter = 0; IterationCounter < NUM_ITERATIONS; IterationCounter++)
+    for (uint8_t IterationCounter = 0; IterationCounter < CAL_KV_ITERATIONS; IterationCounter++)
     {
         // Initial homing - Forward direction to end switch
         Stepper.Move (STEPPER_VEL_CAL, 0.25);
         while (Stepper.GetEnable());
 
         // Start stepper - Backward direction
-        Stepper.Move (-VEL_MULTIPLIERS[IterationCounter], STEPPER_ACC_MAX);
+        Stepper.Move (-CAL_KV_VELOCITIES[IterationCounter], STEPPER_ACC_MAX);
 
         // Wait for speed to stabilise
         while (Stepper.GetCurrentVel() != Stepper.GetTargetVel());
@@ -249,8 +368,8 @@ void CalibrationCartVel ()
         uint32_t EncoderVelSum = 0;
         uint32_t SampleCounter = 0;
 
-        // Collect samples until 90% of course
-        while ((EncoderX.GetPos() > (CalX.Max / 10)) && (Stepper.GetEnable()))
+        // Collect samples until end position is reached
+        while ((Cart.Pos > -CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
         {
             EncoderVelSum += EncoderX.GetVel();
             SampleCounter++;
@@ -268,18 +387,20 @@ void CalibrationCartVel ()
         if (SampleCounter > 0)
         {
             float AverageEncoderVel = (float)EncoderVelSum / SampleCounter;
-            float DeltaPos = (float)(PosStart - PosEnd) * X_VALUE_TOTAL_M / CalX.Max;
+            float DeltaPos = (float)(PosStart - PosEnd) * X_VALUE_TOTAL_M / Cal.CartPos.Max;
             float DeltaT = (float)(TickEnd - TickStart) / TIMER_FREQUENCY;
             float RealVel = DeltaPos / DeltaT;
-            KvEncoder[IterationCounter] = AverageEncoderVel / RealVel;
+            KvEncoder[IterationCounter * 2] = AverageEncoderVel / RealVel;
         }
+
+        Cal.CartVel.Progress = (uint8_t)(((IterationCounter * 2 + 1) * 100) / CAL_KV_TOTAL_STEPS);
 
         // Move slowly to backward end switch
         Stepper.Move (-STEPPER_VEL_CAL, 0.25);
         while (Stepper.GetEnable());
 
         // Start stepper - Forward direction
-        Stepper.Move (VEL_MULTIPLIERS[IterationCounter], STEPPER_ACC_MAX);
+        Stepper.Move (CAL_KV_VELOCITIES[IterationCounter], STEPPER_ACC_MAX);
 
         // Wait for speed to stabilise
         while (Stepper.GetCurrentVel() != Stepper.GetTargetVel());
@@ -290,8 +411,8 @@ void CalibrationCartVel ()
         EncoderVelSum = 0;
         SampleCounter = 0;
 
-        // Collect samples until 90% of course
-        while ((EncoderX.GetPos() < (CalX.Max * 0.9)) && (Stepper.GetEnable()))
+        // Collect samples until end position is reached
+        while ((Cart.Pos < CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
         {
             EncoderVelSum += EncoderX.GetVel();
             SampleCounter++;
@@ -309,40 +430,49 @@ void CalibrationCartVel ()
         if (SampleCounter > 0)
         {
             float AverageEncoderVel = (float)EncoderVelSum / SampleCounter;
-            float DeltaPos = (float)(PosEnd - PosStart) * X_VALUE_TOTAL_M / CalX.Max;
+            float DeltaPos = (float)(PosEnd - PosStart) * X_VALUE_TOTAL_M / Cal.CartPos.Max;
             float DeltaT = (float)(TickEnd - TickStart) / TIMER_FREQUENCY;
             float RealVel = DeltaPos / DeltaT;
-            KvEncoder[IterationCounter] = AverageEncoderVel / RealVel;
+            KvEncoder[IterationCounter * 2 + 1] = AverageEncoderVel / RealVel;
         }
+
+        Cal.CartVel.Progress = (uint8_t)(((IterationCounter * 2 + 2) * 100) / CAL_KV_TOTAL_STEPS);
     }
 
     // Calculate average Kv
     float KvEncoderSum = 0;
-    for (uint8_t IterationCounter = 0; IterationCounter < NUM_ITERATIONS; IterationCounter++)
-        KvEncoderSum += KvEncoder[IterationCounter];
+    for (uint8_t StepCounter = 0; StepCounter < CAL_KV_TOTAL_STEPS; StepCounter++)
+        KvEncoderSum += KvEncoder[StepCounter];
+    Cal.CartVel.Kv = KvEncoderSum / CAL_KV_TOTAL_STEPS;
+    Cal.CartPos.Kv = Cal.CartVel.Kv;
 
-    CalX.Kv = KvEncoderSum / NUM_ITERATIONS;
+    // Set calibration variables
+    Cal.CartVel.Status = CAL_DONE;
+    Cal.CartVel.Progress = 100;
+    CalibrationUpdateFlags();
 }
 
 // ------------------------------------------------------------------------------------------------------- //
-// Calibrate motor velocity constant - Must be called with the pendulum detached
+// Calibrate motor Kv - Must be called with the pendulum detached and AFTER CalibrationCartPos
 // ------------------------------------------------------------------------------------------------------- //
 
 void CalibrationMotorVel ()
 {
-    const uint8_t NUM_ITERATIONS = 3;
-    const float VEL_MULTIPLIERS[] = {0.25, 0.625, 1};
-    float StepperKv[NUM_ITERATIONS * 2] = {};
-    uint8_t KvCounter = 0;
+    float StepperKv[CAL_KV_TOTAL_STEPS] = {};
 
-    for (uint8_t IterationCounter = 0; IterationCounter < NUM_ITERATIONS; IterationCounter++)
+    // Set calibration variables
+    Cal.MotorVel.Status = CAL_RUNNING;
+    Cal.MotorVel.Progress = 0;
+    CalibrationUpdateFlags();
+
+    for (uint8_t IterationCounter = 0; IterationCounter < CAL_KV_ITERATIONS; IterationCounter++)
     {
         // Initial homing - Forward direction to end switch
         Stepper.Move (STEPPER_VEL_CAL, 0.25);
         while (Stepper.GetEnable());
 
         // Start stepper - Backward direction at test velocity
-        Stepper.Move (-VEL_MULTIPLIERS[IterationCounter], STEPPER_ACC_MAX);
+        Stepper.Move (-CAL_KV_VELOCITIES[IterationCounter], STEPPER_ACC_MAX);
 
         // Wait for speed to stabilise
         while (Stepper.GetCurrentVel() != Stepper.GetTargetVel());
@@ -351,8 +481,8 @@ void CalibrationMotorVel ()
         uint64_t PwmSum = 0;
         uint32_t SampleCounter = 0;
 
-        // Collect samples until 90% of course
-        while ((EncoderX.GetPos() > (CalX.Max / 10)) && (Stepper.GetEnable()))
+        // Collect samples until end position is reached
+        while ((Cart.Pos > -CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
         {
             EncoderVelSum += EncoderX.GetVel();
             PwmSum += Stepper.GetPwmFrequency();
@@ -366,17 +496,19 @@ void CalibrationMotorVel ()
         // Calculate Kv for backward run
         if (SampleCounter > 0)
         {
-            float AverageVel = ((float)EncoderVelSum / SampleCounter) / CalX.Kv;
+            float AverageVel = ((float)EncoderVelSum / SampleCounter) / Cal.CartPos.Kv;
             float AveragePwm = (float)PwmSum / SampleCounter;
-            StepperKv[KvCounter++] = AveragePwm / AverageVel;
+            StepperKv[IterationCounter * 2] = AveragePwm / AverageVel;
         }
+
+        Cal.MotorVel.Progress = (uint8_t)(((IterationCounter * 2 + 1) * 100) / CAL_KV_TOTAL_STEPS);
 
         // Move slowly to backward end switch
         Stepper.Move (-STEPPER_VEL_CAL, 0.25);
         while (Stepper.GetEnable());
 
         // Start stepper - Forward direction at test velocity
-        Stepper.Move (VEL_MULTIPLIERS[IterationCounter], STEPPER_ACC_MAX);
+        Stepper.Move (CAL_KV_VELOCITIES[IterationCounter], STEPPER_ACC_MAX);
 
         // Wait for speed to stabilise
         while (Stepper.GetCurrentVel() != Stepper.GetTargetVel());
@@ -385,8 +517,8 @@ void CalibrationMotorVel ()
         PwmSum = 0;
         SampleCounter = 0;
 
-        // Collect samples until 90% of course
-        while ((EncoderX.GetPos() < (CalX.Max * 0.9)) && (Stepper.GetEnable()))
+        // Collect samples until end position is reached
+        while ((Cart.Pos < CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
         {
             EncoderVelSum += EncoderX.GetVel();
             PwmSum += Stepper.GetPwmFrequency();
@@ -400,20 +532,27 @@ void CalibrationMotorVel ()
         // Calculate Kv for forward run
         if (SampleCounter > 0)
         {
-            float AverageVel = ((float)EncoderVelSum / SampleCounter) / CalX.Kv;
+            float AverageVel = ((float)EncoderVelSum / SampleCounter) / Cal.CartPos.Kv;
             float AveragePwm = (float)PwmSum / SampleCounter;
-            StepperKv[KvCounter++] = AveragePwm / AverageVel;
+            StepperKv[IterationCounter * 2 + 1] = AveragePwm / AverageVel;
         }
+
+        Cal.MotorVel.Progress = (uint8_t)(((IterationCounter * 2 + 2) * 100) / CAL_KV_TOTAL_STEPS);
     }
 
     // Calculate average Kv
     float StepperKvSum = 0;
-    for (uint8_t Counter = 0; Counter < KvCounter; Counter++)
-        StepperKvSum += StepperKv[Counter];
-    float KvMotor = StepperKvSum / KvCounter;
+    for (uint8_t StepCounter = 0; StepCounter < CAL_KV_TOTAL_STEPS; StepCounter++)
+        StepperKvSum += StepperKv[StepCounter];
+    Cal.MotorVel.Kv = StepperKvSum / CAL_KV_TOTAL_STEPS;
 
     // Update motor Kv parameter
-    Stepper.SetKv(KvMotor);
+    Stepper.SetKv(Cal.MotorVel.Kv);
+
+    // Set calibration variables
+    Cal.MotorVel.Status = CAL_DONE;
+    Cal.MotorVel.Progress = 100;
+    CalibrationUpdateFlags();
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -422,9 +561,6 @@ void CalibrationMotorVel ()
 
 void CalibrationPendulumPos ()
 {
-    CalT.Progress = 0;
-    CalT.Status = CAL_RUNNING;
-
     // Aux variables
     uint32_t TimeEven[10] = {};
     uint32_t TimeOdd[10] = {};
@@ -432,6 +568,11 @@ void CalibrationPendulumPos ()
     uint32_t PosOdd[10] = {};
     float SlopeEven, OffsetEven, SlopeOdd, OffsetOdd;
     int32_t Offset = 0;
+
+    // Set calibration variables
+    Cal.Theta.Progress = 0;
+    Cal.Theta.Status = CAL_RUNNING;
+    CalibrationUpdateFlags();
 
     // Set reference to a known value
     EncoderT.SetPos(ENCODER_T_PPR/2);
@@ -452,7 +593,7 @@ void CalibrationPendulumPos ()
         TimeEven[Idx] = SysTickCounter;
 
         // Increase progress
-        CalT.Progress += (50/ENCODER_T_CAL_CYCLES);
+        Cal.Theta.Progress += (50/ENCODER_T_CAL_CYCLES);
 
         // Wait for direction change
         while (EncoderT.GetDir() == DirectionLast);
@@ -463,7 +604,7 @@ void CalibrationPendulumPos ()
         TimeOdd[Idx] = SysTickCounter;
 
         // Increase progress
-        CalT.Progress += (50/ENCODER_T_CAL_CYCLES);
+        Cal.Theta.Progress += (50/ENCODER_T_CAL_CYCLES);
     }
 
     // Calculate the slopes and offsets for both curves
@@ -480,10 +621,12 @@ void CalibrationPendulumPos ()
     EncoderT.SetPos(EncoderT.GetPos() + Offset + ENCODER_T_PPR/2);
 
     // Define encoder maximum counter value
-    CalT.Max = ENCODER_T_PPR;
+    Cal.Theta.Max = ENCODER_T_PPR;
 
-    CalT.Progress = 100;
-    CalT.Status = CAL_DONE;
+    // Set calibration variables
+    Cal.Theta.Status = CAL_DONE;
+    Cal.Theta.Progress = 100;
+    CalibrationUpdateFlags();
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -492,27 +635,28 @@ void CalibrationPendulumPos ()
 
 void UartRxCallback(char received_char)
 {
-    // Detect end of command
-    if (received_char == '\n' || received_char == '\r')
+    // Only store character if buffer not full and not processing
+    if (!UartCommandReady && UartRxIndex < sizeof(UartRxBuffer) - 1)
     {
-        if (UartRxIndex > 0)
+        UartRxBuffer[UartRxIndex++] = received_char;
+
+        // Check for complete command
+        if (received_char == '}' && UartRxBuffer[0] == '{')
         {
             UartRxBuffer[UartRxIndex] = '\0';
             UartCommandReady = true;
         }
+        else if (received_char == '{')
+        {
+            // New command starting - reset
+            UartRxIndex = 1;
+            UartRxBuffer[0] = '{';
+        }
     }
-
-    // Add char to buffer
-    else if (UartRxIndex < sizeof(UartRxBuffer) - 1)
-        UartRxBuffer[UartRxIndex++] = received_char;
-
-    // Overflow
-    else
-        UartRxIndex = 0;
 }
 
 // ------------------------------------------------------------------------------------------------------- //
-// Process received UART command
+// Process received UART command - JSON FORMAT
 // ------------------------------------------------------------------------------------------------------- //
 
 void UartProcessCommand()
@@ -520,133 +664,173 @@ void UartProcessCommand()
     if (!UartCommandReady)
         return;
 
-    char* cmd = (char*)UartRxBuffer;
+    char* cmd_str = (char*)UartRxBuffer;
+    static char json_response[256];
+    static JsonBuilder response(json_response, sizeof(json_response));
 
-    // Header
-    Serial.SendString("[RESPONSE]");
+    // Reset builder for new response
+    response.reset();
 
-    // Control mode
-    if (strncmp(cmd, "MODE:", 5) == 0)
+    // Parse received JSON
+    Parser.setJson(cmd_str);
+
+    // Start response object
+    response.startObject();
+
+    // Check if JSON is valid
+    if (!Parser.isValid())
     {
-        int mode = atoi(cmd + 5);
-        if (mode >= 0 && mode < sizeof_control_mode_t)
-        {
-            ControlMode = (control_mode_t)mode;
-
-            Serial.SendString("OK: MODE_CHANGED\n");
-        }
-        else
-            Serial.SendString("ERROR: INVALID_MODE\n");
-    }
-
-    // Shadow reference
-    else if (strncmp(cmd, "SREF:", 5) == 0)
-    {
-        float ref = atof(cmd + 5);
-        if (ref >= -0.2 && ref <= 0.2)
-        {
-            PosRefShadow = ref;
-            Serial.SendString("OK: SHADOW_REF_SET\n");
-        }
-        else
-            Serial.SendString("ERROR: REF_OUT_OF_RANGE\n");
-    }
-
-    // Apply shadow reference
-    else if (strncmp(cmd, "AREF", 4) == 0)
-    {
-        ControlSetPosReference();
-        Serial.SendString("OK: REF_APPLIED\n");
+        response.addString("status", "error");
+        response.addString("msg", "invalid_json");
     }
 
     else
-        Serial.SendString("ERROR: UNKNOWN_COMMAND\n");
+    {
+        // Extract command field
+        char command[32];
+        if (!Parser.getString("cmd", command, sizeof(command)))
+        {
+            response.addString("status", "error");
+            response.addString("msg", "missing_cmd_field");
+        }
+        // MODE command - Change control mode
+        else if (strcmp(command, "MODE") == 0)
+        {
+            int32_t mode;
+            if (Parser.getInt("value", &mode) && mode >= 0 && mode < sizeof_control_mode_t)
+            {
+                ControlMode = (control_mode_t)mode;
+                response.addString("status", "ok");
+                response.addString("msg", "mode_changed");
+                response.addInt("value", mode);
+            }
+            else
+            {
+                response.addString("status", "error");
+                response.addString("msg", "invalid_mode");
+            }
+        }
+        // SREF command - Set shadow reference
+        else if (strcmp(command, "SREF") == 0)
+        {
+            float ref;
+            if (Parser.getFloat("value", &ref) && ref >= -0.2 && ref <= 0.2)
+            {
+                PosRefShadow = ref;
+                response.addString("status", "ok");
+                response.addString("msg", "shadow_ref_set");
+                response.addFloat("value", ref, 6);
+            }
+            else
+            {
+                response.addString("status", "error");
+                response.addString("msg", "ref_out_of_range");
+            }
+        }
+        // AREF command - Apply reference
+        else if (strcmp(command, "AREF") == 0)
+        {
+            ControlSetPosReference();
+            response.addString("status", "ok");
+            response.addString("msg", "reference_applied");
+            response.addFloat("value", ControllerFullLqr.GetReference(0), 6);
+        }
+        // Unknown command
+        else
+        {
+            response.addString("status", "error");
+            response.addString("msg", "unknown_command");
+            response.addString("cmd", command);
+        }
+    }
 
-    // Clear buffer
+    // End response object and send
+    response.endObject();
+    Serial.SendString(response.getBuffer());
+    Serial.SendString("\n");
+
+    // Cleanup - Clear buffer and reset flag
     UartCommandReady = false;
     UartRxIndex = 0;
     memset((void*)UartRxBuffer, 0, sizeof(UartRxBuffer));
 }
 
 // ------------------------------------------------------------------------------------------------------- //
-// Send device info via UART
+// Send firmware info to serial port
+// ------------------------------------------------------------------------------------------------------- //
+
+void UartSendInfo()
+{
+    char json_buffer[256];
+    JsonBuilder json(json_buffer, sizeof(json_buffer));
+
+    json.startObject();
+    json.addString("type", "INFO");
+    json.addString("name", DEVICE_FW_NAME);
+    json.addString("version", DEVICE_FW_VERSION);
+    json.addString("author", DEVICE_FW_AUTHOR);
+    json.addString("date", __DATE__);
+    json.addString("time", __TIME__);
+    json.endObject();
+
+    Serial.SendString(json.getBuffer());
+    Serial.SendString("\n");
+}
+
+// ------------------------------------------------------------------------------------------------------- //
+// Send device status via UART
 // ------------------------------------------------------------------------------------------------------- //
 
 void UartSendStatus()
 {
-    char Aux_String[50];
+    static char json_buffer[512];
+    JsonBuilder json(json_buffer, sizeof(json_buffer));
 
-    // Header
-    Serial.SendString("[STATUS]");
+    json.startObject();
 
     // Timestamp
-    ltoa(SysTickCounter, Aux_String, 10);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
+    json.addUInt("ts", SysTickCounter);
 
     // Control mode
-    ltoa((int32_t)ControlMode, Aux_String, 10);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
+    json.addInt("mode", (int32_t)ControlMode);
 
     // Calibration status
-    ltoa((int32_t)CalX.Status, Aux_String, 10);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
+    json.addInt("cal_x_status", (int32_t)Cal.CartPos.Status);
+    json.addInt("cal_t_status", (int32_t)Cal.Theta.Status);
 
-    ltoa((int32_t)CalT.Status, Aux_String, 10);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
+    // Motor data
+    json.addFloat("mot_target_vel", Stepper.GetTargetVel(), 4);
+    json.addFloat("mot_current_vel", Stepper.GetCurrentVel(), 4);
 
-    // Motor target velocity
-    Aux::F2Str(Stepper.GetTargetVel(), Aux_String, 6);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
-
-    // Motor acceleration
     float AccNow = 0;
     if (Stepper.GetTargetVel() > Stepper.GetCurrentVel())
         AccNow = Stepper.GetCurrentAcc();
     else if (Stepper.GetTargetVel() < Stepper.GetCurrentVel())
         AccNow = -Stepper.GetCurrentAcc();
-    Aux::F2Str(AccNow, Aux_String, 6);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
+    json.addFloat("mot_acc", AccNow, 4);
 
-    // PWM frequency
-    ltoa((Stepper.GetDir() == 1 ? Stepper.GetPwmFrequency() : -Stepper.GetPwmFrequency()), Aux_String, 10);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
+    json.addInt("mot_pwm", (Stepper.GetDir() == 1 ? Stepper.GetPwmFrequency() : -Stepper.GetPwmFrequency()));
 
-    // Cart position
-    Aux::F2Str(Cart.Pos, Aux_String, 6);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
+    // Cart data
+    json.addFloat("cart_pos", Cart.Pos, 6);
+    json.addFloat("cart_vel", Cart.Vel, 6);
+    json.addFloat("cart_pos_filt", CartFiltered.Pos, 6);
+    json.addFloat("cart_vel_filt", CartFiltered.Vel, 6);
 
-    // Cart velocity
-    Aux::F2Str(Cart.Vel, Aux_String, 6);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
+    // Pendulum data
+    json.addFloat("pend_pos", Pendulum.Pos, 6);
+    json.addFloat("pend_vel", Pendulum.Vel, 6);
+    json.addFloat("pend_pos_filt", PendulumFiltered.Pos, 6);
+    json.addFloat("pend_vel_filt", PendulumFiltered.Vel, 6);
 
-    // Pendulum position
-    Aux::F2Str(Pendulum.Pos, Aux_String, 6);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
+    // References
+    json.addFloat("ref_pos", ControllerFullLqr.GetReference(0), 6);
+    json.addFloat("ref_shadow", PosRefShadow, 6);
 
-    // Pendulum velocity
-    Aux::F2Str(Pendulum.Vel, Aux_String, 6);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
+    json.endObject();
 
-    // Position reference
-    Aux::F2Str(ControllerFullLqr.GetReference(0), Aux_String, 6);
-    Serial.SendString(Aux_String);
-    Serial.SendString(";");
-
-    // Shadow reference
-    Aux::F2Str(PosRefShadow, Aux_String, 6);
-    Serial.SendString(Aux_String);
-
+    // Send JSON
+    Serial.SendString(json.getBuffer());
     Serial.SendString("\n");
 }
 
@@ -660,7 +844,7 @@ void DeviceUpdateLcd()
     Display.DrawFilledRectangle (0, 0, 83, 8, LCD_PIXEL_ON);
 
     // Calibration mode
-    if ((CalX.Status == CAL_RUNNING) || (CalT.Status == CAL_RUNNING))
+    if (Cal.AnyRunning)
     {
         Display.DrawRectangle (0, 8, 83, 16, LCD_PIXEL_ON);
         Display.DrawRectangle (0, 38, 83, 47, LCD_PIXEL_ON);
@@ -668,19 +852,18 @@ void DeviceUpdateLcd()
         Display.Goto(0, 9);
         Display.WriteString("CALIBRATION", LCD_FONT_SMALL, LCD_PIXEL_XOR);
 
-        if (CalX.Status == CAL_RUNNING)
+        if (Cal.CartPos.Status == CAL_RUNNING)
         {
             Display.Goto(1, 24);
             Display.WriteString("X-axis", LCD_FONT_SMALL, LCD_PIXEL_XOR);
 
-            if (CalX.Progress != 0)
+            if (Cal.CartPos.Progress != 0)
             {
                 Display.Goto(3, 0);
                 Display.WriteString("Calibrating...", LCD_FONT_SMALL, LCD_PIXEL_ON);
 
-                Display.DrawFilledRectangle(0, 38, (CalX.Progress * PCD8544_COLUMNS / 100), 47, LCD_PIXEL_ON);
+                Display.DrawFilledRectangle(0, 38, (Cal.CartPos.Progress * PCD8544_COLUMNS / 100), 47, LCD_PIXEL_ON);
             }
-
             else
             {
                 Display.Goto(3, 15);
@@ -688,7 +871,7 @@ void DeviceUpdateLcd()
             }
         }
 
-        else if (CalT.Status == CAL_RUNNING)
+        else if (Cal.Theta.Status == CAL_RUNNING)
         {
             Display.Goto(1, 12);
             Display.WriteString("Theta-axis", LCD_FONT_SMALL, LCD_PIXEL_XOR);
@@ -696,8 +879,32 @@ void DeviceUpdateLcd()
             Display.Goto(3, 0);
             Display.WriteString("Calibrating...", LCD_FONT_SMALL, LCD_PIXEL_ON);
 
-            if (CalT.Progress != 0)
-                Display.DrawFilledRectangle(0, 38, (CalT.Progress * PCD8544_COLUMNS / 100), 47, LCD_PIXEL_ON);
+            if (Cal.Theta.Progress != 0)
+                Display.DrawFilledRectangle(0, 38, (Cal.Theta.Progress * PCD8544_COLUMNS / 100), 47, LCD_PIXEL_ON);
+        }
+
+        else if (Cal.CartVel.Status == CAL_RUNNING)
+        {
+            Display.Goto(1, 18);
+            Display.WriteString("Cart Vel", LCD_FONT_SMALL, LCD_PIXEL_XOR);
+
+            Display.Goto(3, 0);
+            Display.WriteString("Calibrating...", LCD_FONT_SMALL, LCD_PIXEL_ON);
+
+            if (Cal.CartVel.Progress != 0)
+                Display.DrawFilledRectangle(0, 38, (Cal.CartVel.Progress * PCD8544_COLUMNS / 100), 47, LCD_PIXEL_ON);
+        }
+
+        else if (Cal.MotorVel.Status == CAL_RUNNING)
+        {
+            Display.Goto(1, 15);
+            Display.WriteString("Motor Vel", LCD_FONT_SMALL, LCD_PIXEL_XOR);
+
+            Display.Goto(3, 0);
+            Display.WriteString("Calibrating...", LCD_FONT_SMALL, LCD_PIXEL_ON);
+
+            if (Cal.MotorVel.Progress != 0)
+                Display.DrawFilledRectangle(0, 38, (Cal.MotorVel.Progress * PCD8544_COLUMNS / 100), 47, LCD_PIXEL_ON);
         }
     }
 
@@ -810,7 +1017,7 @@ void DeviceUpdateLcd()
 void DeviceUpdateRgb()
 {
     // Calibration mode
-    if ((CalX.Status == CAL_RUNNING) || (CalT.Status == CAL_RUNNING))
+    if ((Cal.CartPos.Status == CAL_RUNNING) || (Cal.Theta.Status == CAL_RUNNING))
         Led.SetColor(RGB_RED, 0);
 
     // Run mode
@@ -924,6 +1131,10 @@ void DeviceUpdateButton2 ()
 // Control loop
 // ------------------------------------------------------------------------------------------------------- //
 
+// ------------------------------------------------------------------------------------------------------- //
+// Control loop
+// ------------------------------------------------------------------------------------------------------- //
+
 void DeviceUpdateControl()
 {
     static uint16_t StoppedCounter = 0;
@@ -932,83 +1143,58 @@ void DeviceUpdateControl()
     if (ControlMode != CONTROL_OFF)
     {
         float Unow = 0;
+        bool CanMove = false;
 
         // Cart PID controller
         if (ControlMode == CONTROL_CART_PID)
-            Unow = ControllerCartPid.Compute(Cart.Pos);
+            Unow = ControllerCartPid.Compute(CartFiltered.Pos);
 
         // Cart Lead controller
         else if (ControlMode == CONTROL_CART_LEAD)
-            Unow = ControllerCartLead.Compute(Cart.Pos);
+            Unow = ControllerCartLead.Compute(CartFiltered.Pos);
 
         // Cart State feedback controller
         else if (ControlMode == CONTROL_CART_SF)
         {
-
-            ControllerCartSF.SetState(0, Cart.Pos);
-            ControllerCartSF.SetState(1, Cart.Vel);
-
+            ControllerCartSF.SetState(0, CartFiltered.Pos);
+            ControllerCartSF.SetState(1, CartFiltered.Vel);
             Unow = ControllerCartSF.Compute();
         }
 
         // Pendulum State feedback controller
         else if (ControlMode == CONTROL_PEND_SF)
         {
-
-            ControllerPendSF.SetState(0, Pendulum.Pos);
-            ControllerPendSF.SetState(1, Pendulum.Vel);
-
+            ControllerPendSF.SetState(0, PendulumFiltered.Pos);
+            ControllerPendSF.SetState(1, PendulumFiltered.Vel);
             Unow = ControllerPendSF.Compute();
         }
- 
 
         // Full LQR controller
         else if (ControlMode == CONTROL_FULL_LQR)
         {
-            ControllerFullLqr.SetState(0, Cart.Pos);
-            ControllerFullLqr.SetState(1, Cart.Vel);
-            ControllerFullLqr.SetState(2, Pendulum.Pos);
-            ControllerFullLqr.SetState(3, Pendulum.Vel);
-
+            ControllerFullLqr.SetState(0, CartFiltered.Pos);
+            ControllerFullLqr.SetState(1, CartFiltered.Vel);
+            ControllerFullLqr.SetState(2, PendulumFiltered.Pos);
+            ControllerFullLqr.SetState(3, PendulumFiltered.Vel);
             Unow = ControllerFullLqr.Compute();
         }
 
-        // Acceleration control - Cart state feedback
-        if (ControlMode == CONTROL_CART_SF)
+
+        // Check if can apply Unow
+        if ((ControlMode == CONTROL_PEND_SF) || (ControlMode == CONTROL_FULL_LQR))
         {
-            float FinalVelocity = (Unow < 0 ? -STEPPER_VEL_MAX : STEPPER_VEL_MAX);
-            float Acceleration = Aux::FastFabs(Unow);
-
-            Stepper.Move(FinalVelocity, Acceleration);
-
-            StoppedCounter = 0;
+            // Pendulum related controllers
+            CanMove = (Cal.Theta.Status == CAL_DONE)
+                      && (Aux::FastFabs(Pendulum.Pos) < 0.1f)
+                      && (Aux::FastFabs(Unow) >= Stepper.GetMinVel());
         }
 
-        // Acceleration control - Pendulum state feedback
-        if ((ControlMode == CONTROL_PEND_SF) && (Aux::FastFabs(Pendulum.Pos) < 0.1) && (CalT.Status == CAL_DONE))
-        {
-            float FinalVelocity = (Unow < 0 ? -STEPPER_VEL_MAX : STEPPER_VEL_MAX);
-            float Acceleration = Aux::FastFabs(Unow);
+        // Other controllers
+        else
+            CanMove = (Aux::FastFabs(Unow) >= Stepper.GetMinVel());
 
-            Stepper.Move(FinalVelocity, Acceleration);
-
-            StoppedCounter = 0;
-        }
-
-
-        // Acceleration control - Full LQR
-        else if ((ControlMode == CONTROL_FULL_LQR) && (Aux::FastFabs(Pendulum.Pos) < 0.1) && (CalT.Status == CAL_DONE))
-        {
-            float FinalVelocity = (Unow < 0 ? -STEPPER_VEL_MAX : STEPPER_VEL_MAX);
-            float Acceleration = Aux::FastFabs(Unow);
-
-            Stepper.Move(FinalVelocity, Acceleration);
-
-            StoppedCounter = 0;
-        }
-
-        // Velocity control - Other controllers
-        else if ((Aux::FastFabs(Unow) >= Stepper.GetMinVel()) && (ControlMode != CONTROL_PEND_SF) && (ControlMode != CONTROL_FULL_LQR))
+        // Apply control action
+        if (CanMove)
         {
             Stepper.Move(Unow, STEPPER_ACC_MAX);
             StoppedCounter = 0;
@@ -1023,9 +1209,8 @@ void DeviceUpdateControl()
         StoppedCounter++;
 
     // Cart is stopped for more than 1 second. Turn coils off to avoid heating
-    if ((StoppedCounter > 5*CONTROL_LOOP_FREQUENCY) && (Stepper.GetEnable()))
+    if ((StoppedCounter > (1000/CONTROL_LOOP_FREQUENCY)) && (Stepper.GetEnable()))
     {
-        // TODO: Maybe put the driver to sleep avoids vibrations
         Stepper.Stop();
         StoppedCounter = 0;
     }
@@ -1079,21 +1264,21 @@ void IsrSysTick ()
     }
 
     // Control loop
-    if ((++ControlCounter >= CONTROL_INTERVAL) && (CalX.Status == CAL_DONE))
+    if ((++ControlCounter >= CONTROL_INTERVAL) && (Cal.CartPos.Status == CAL_DONE))
     {
         DeviceUpdateControl();
         ControlCounter = 0;
     }
 
     // UART update
-    if ((++UartCounter >= UART_TX_INTERVAL) && ((CalX.Status == CAL_DONE) && (CalT.Status == CAL_DONE)))
+    if ((++UartCounter >= UART_TX_INTERVAL) && ((Cal.CartPos.Status == CAL_DONE) && (Cal.Theta.Status == CAL_DONE)))
     {
         UartSendStatus();
         UartCounter = 0;
     }
 
     // Check for UART commands
-    if ((++CmdCounter >= UART_TX_INTERVAL) && ((CalX.Status == CAL_DONE) && (CalT.Status == CAL_DONE)))
+    if ((++CmdCounter >= UART_TX_INTERVAL) && ((Cal.CartPos.Status == CAL_DONE) && (Cal.Theta.Status == CAL_DONE)))
     {
         UartProcessCommand();
         CmdCounter = 0;
@@ -1230,11 +1415,12 @@ void main ()
     // --------------------------------------------------------------------------------------------------- //
 
     // Define state feedback gains and reference
-    float CartGains[2] = {37.875340, 20.927861};
+    float CartGains[2] = {4.426132, 0.050531};
+    float CartFFGains[2] = {4.426132, 0};
     float CartRefs[2] = {0, 0};
 
     // Initialize Cart State Feedback controller
-    ControllerCartSF.Init (CartGains, CartRefs, 2, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
+    ControllerCartSF.Init (CartGains, CartFFGains, CartRefs, 2, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure pendulum state feedback controller
@@ -1242,23 +1428,23 @@ void main ()
 
     // Define state feedback gains and reference
     float PendGains[2] = {-67.631036, -7.567172};
+    float PendFFGains[2] = {-67.631036, 0};
     float PendRefs[2] = {0, 0};
 
     // Initialize Pend State Feedback controller
-    ControllerPendSF.Init (PendGains, PendRefs, 2, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
+    ControllerPendSF.Init (PendGains, PendFFGains, PendRefs, 2, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure LQR controller
     // --------------------------------------------------------------------------------------------------- //
 
     // Define LQR gains and references
-
-    float CartPendGains[4] = {-2, -10, -40, -20};
-    //float CartPendGains[4] = {-7, -5, -50, -10};
+    float CartPendGains[4] = {-0.097815, -2.024568, -4.826780, -1.102804};
+    float CartPendFFGains[4] = {-0.097815, 0, 0, 0};
     float CartPendRefs[4] = {0};
 
     // Initialize LQR controller
-    ControllerFullLqr.Init (CartPendGains, CartPendRefs, 4, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
+    ControllerFullLqr.Init (CartPendGains, CartPendFFGains, CartPendRefs, 4, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure Systick timer
@@ -1300,16 +1486,7 @@ void main ()
     // Send firmware info to serial port
     // --------------------------------------------------------------------------------------------------- //
 
-    Serial.SendString("[INFO]");
-    Serial.SendString (DEVICE_FW_NAME);
-    Serial.SendString (" - Version: ");
-    Serial.SendString (DEVICE_FW_VERSION);
-    Serial.SendString (" - Date: ");
-    Serial.SendString (__DATE__ "\0");
-    Serial.SendString (" " __TIME__ "\0");
-    Serial.SendString (" - Author: ");
-    Serial.SendString (DEVICE_FW_AUTHOR);
-    Serial.SendString ("\n");
+    UartSendInfo ();
 
     SysCtlDelay(30000000);
 
@@ -1320,22 +1497,24 @@ void main ()
     // Start timer
     SysTickEnable ();
 
+    // --------------------------------------------------------------------------------------------------- //
+    // Calibrations - CalibrationCartGoHome and CalibrationPendulumPos are mandatory
+    // --------------------------------------------------------------------------------------------------- //
+
     // Home cart
     CalibrationCartGoHome ();
 
-    // Calibrate cart X position limits
-    //CalibrationCartPos ();
-
-    // Calibrate cart velocity constant - Must be called with the pendulum detached
-    //CalibrationCartVel();
-
-    // Calibrate motor velocity constant - Must be called with the pendulum detached
-    //CalibrationMotorVel();
-
-    // Use controller to go to X = 0
-    ControlMode = CONTROL_CART_PID;
-    while (Aux::FastFabs(Cart.Pos) > 0.0001);
-    ControlMode = CONTROL_OFF;
+//    // Calibrate cart X position limits
+//    CalibrationCartPos ();
+//
+//    // Calibrate cart velocity constant - Must be called with the pendulum detached
+//    CalibrationCartVel();
+//
+//    // Calibrate motor velocity constant - Must be called with the pendulum detached
+//    CalibrationMotorVel();
+//
+//    // Go to x = 0 so pendulum has some momentum
+//    CalibrationCartGoPosition (0);
 
     // Calibrate pendulum angle
     CalibrationPendulumPos ();
@@ -1344,7 +1523,9 @@ void main ()
     // Main loop
     // --------------------------------------------------------------------------------------------------- //
 
-    SysCtlDelay(10000000);
+
+    while (Start == 0);
+
     while (1)
     {
         static float MoveVel = STEPPER_VEL_CAL;
@@ -1352,23 +1533,26 @@ void main ()
         // Start stepper - Backwards direction
         Stepper.Move (-MoveVel, STEPPER_ACC_MAX);
 
-        while ((Cart.Pos > -0.05) && Stepper.GetEnable());
+        while ((Cart.Pos > -0.075) && Stepper.GetEnable());
 
         Stepper.Move (0, STEPPER_ACC_MAX);
         while (Stepper.GetCurrentVel () != 0);
+
+        SysCtlDelay(10000000);
 
         // Start stepper
         Stepper.Move (MoveVel, STEPPER_ACC_MAX);
 
-        while ((Cart.Pos < 0.05) && Stepper.GetEnable());
+        while ((Cart.Pos < 0.075) && Stepper.GetEnable());
 
         Stepper.Move (0, STEPPER_ACC_MAX);
         while (Stepper.GetCurrentVel () != 0);
 
+        SysCtlDelay(10000000);
+
         MoveVel += 0.25;
-        if (MoveVel > STEPPER_VEL_MAX)
-            //MoveVel = STEPPER_VEL_CAL;
-            while (1);
+        if (MoveVel > 1)
+            MoveVel = STEPPER_VEL_CAL;
     }
 }
 

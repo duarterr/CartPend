@@ -1,15 +1,15 @@
-#!/usr/bin/env python3
 """
 Real-time plotter for inverted pendulum on cart system
-Receives data via UART and plots 5 graphs.
-Supports sending commands to the microcontroller.
+Receives data via UART in JSON format and plots 5 graphs.
+Supports sending JSON commands to the microcontroller.
 
 Starts with a graphical setup menu (Tkinter) for configuration.
 
 Message format:
-- [STATUS]timestamp;control_mode;cal_x;cal_t;target_vel;motor_acc;pwm_freq;cart_pos;cart_vel;pend_pos;pend_vel;ref_pos;shadow_ref
-- [INFO]message
-- [RESPONSE]message
+- JSON Status: {"ts":12345,"mode":2,"cart_pos":0.025,...}
+- JSON Info: {"type":"INFO","name":"...","version":"..."}
+- JSON Response: {"status":"ok","msg":"..."}
+- JSON Command: {"cmd":"MODE","value":5}
 """
 
 import serial
@@ -27,6 +27,7 @@ import serial.tools.list_ports
 from tkinter import filedialog
 import csv
 from datetime import datetime
+import json
 
 # ==============================================================================
 # CLASSE DE CONFIGURAÇÃO (MENU GRÁFICO - TKINTER)
@@ -43,7 +44,7 @@ class SetupMenu:
         # Variáveis de controle para armazenar as seleções
         self.port_var = tk.StringVar(master)
         self.baudrate_var = tk.StringVar(master, value="115200")
-        self.max_points_var = tk.StringVar(master, value="1000")
+        self.max_points_var = tk.StringVar(master, value="500")
         self.settings = None
 
         # 1. Obter Portas Seriais Disponíveis
@@ -63,7 +64,7 @@ class SetupMenu:
             "460800",
             "921600",
         ]
-        self.max_points_options = ["100", "250", "500", "1000", "2000"]
+        self.max_points_options = ["500", "1000", "2000", "5000", "10000", "20000"]
 
         # 2. Criar e configurar o Grid
         main_frame = ttk.Frame(master, padding="10")
@@ -178,13 +179,21 @@ class PendulumDataPlotter:
         # Data storage for plotting
         self.time_data = deque(maxlen=max_points)
         self.real_time = deque(maxlen=max_points)
+
         self.target_vel = deque(maxlen=max_points)
+        self.current_vel = deque(maxlen=max_points)
         self.motor_acc = deque(maxlen=max_points)
         self.pwm_freq = deque(maxlen=max_points)
+
         self.cart_pos = deque(maxlen=max_points)
         self.cart_vel = deque(maxlen=max_points)
+        self.cart_pos_filt = deque(maxlen=max_points)
+        self.cart_vel_filt = deque(maxlen=max_points)
+
         self.pendulum_pos = deque(maxlen=max_points)
         self.pendulum_vel = deque(maxlen=max_points)
+        self.pendulum_pos_filt = deque(maxlen=max_points)
+        self.pendulum_vel_filt = deque(maxlen=max_points)
 
         # Status data
         self.control_mode = 0
@@ -192,6 +201,10 @@ class PendulumDataPlotter:
         self.cal_t_status = 0
         self.ref_pos = 0.0
         self.shadow_ref = 0.0
+
+        # Device info
+        self.device_name = "Unknown"
+        self.device_version = "Unknown"
 
         # Control mode names
         self.control_modes = {
@@ -202,6 +215,9 @@ class PendulumDataPlotter:
             4: "PEND_SF",
             5: "FULL_LQR",
         }
+
+        # Calibration status mapping
+        self.cal_status_map = {0: "Not Done", 1: "Running", 2: "Done"}
 
         # Start time reference
         self.start_time = None
@@ -244,11 +260,40 @@ class PendulumDataPlotter:
         self.lines = []
         self.animation = None
 
+    def reset_data(self):
+        """Reset all collected data"""
+        self.time_data.clear()
+        self.real_time.clear()
+        self.target_vel.clear()
+        self.current_vel.clear()
+        self.motor_acc.clear()
+        self.pwm_freq.clear()
+        self.cart_pos.clear()
+        self.cart_vel.clear()
+        self.cart_pos_filt.clear()
+        self.cart_vel_filt.clear()
+        self.pendulum_pos.clear()
+        self.pendulum_vel.clear()
+        self.pendulum_pos_filt.clear()
+        self.pendulum_vel_filt.clear()
+
+        # Reset start time
+        self.start_time = None
+
+        # Clear pending data in queue
+        while not self.data_queue.empty():
+            try:
+                self.data_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        print("✓ Data reset complete")
+
     def setup_plots(self):
         """Configure the plot appearance and create line objects"""
 
         titles = [
-            "Target Velocity (m/s)",
+            "Motor Velocity (m/s)",
             "PWM Frequency (Hz)",
             "Cart Position (m)",
             "Cart Velocity (m/s)",
@@ -261,8 +306,74 @@ class PendulumDataPlotter:
             ax.set_title(title, fontsize=10)
             ax.set_xlabel("Time (s)" if i == 4 else "")
             ax.grid(True, alpha=0.3)
-            (line,) = ax.plot([], [], color=color, linewidth=1.5)
+            (line,) = ax.plot(
+                [],
+                [],
+                color=color,
+                linewidth=1.5,
+                label=("Target" if i == 0 else ("Raw" if i in [2, 3, 4, 5] else "")),
+            )
             self.lines.append(line)
+
+            # Add current velocity line for motor
+            if i == 0:  # Motor Velocity
+                (line_current,) = ax.plot(
+                    [],
+                    [],
+                    color="black",
+                    linewidth=1,
+                    linestyle="--",
+                    label="Current",
+                )
+                self.lines.append(line_current)
+                ax.legend(loc="upper right", fontsize=8)
+            # Add filtered lines for cart position and velocity
+            elif i == 2:  # Cart Position
+                (line_filt,) = ax.plot(
+                    [],
+                    [],
+                    color="black",
+                    linewidth=1,
+                    linestyle="--",
+                    label="Filtered",
+                )
+                self.lines.append(line_filt)
+                ax.legend(loc="upper right", fontsize=8)
+            elif i == 3:  # Cart Velocity
+                (line_filt,) = ax.plot(
+                    [],
+                    [],
+                    color="black",
+                    linewidth=1,
+                    linestyle="--",
+                    label="Filtered",
+                )
+                self.lines.append(line_filt)
+                ax.legend(loc="upper right", fontsize=8)
+            # Add filtered lines for pendulum position and velocity
+            elif i == 4:  # Pendulum Position
+                (line_filt,) = ax.plot(
+                    [],
+                    [],
+                    color="black",
+                    linewidth=1,
+                    linestyle="--",
+                    label="Filtered",
+                )
+                self.lines.append(line_filt)
+                ax.legend(loc="upper right", fontsize=8)
+            elif i == 5:  # Pendulum Velocity
+                (line_filt,) = ax.plot(
+                    [],
+                    [],
+                    color="black",
+                    linewidth=1,
+                    linestyle="--",
+                    label="Filtered",
+                )
+                self.lines.append(line_filt)
+                ax.legend(loc="upper right", fontsize=8)
+
             ax.set_xlim(0, 10)
             ax.set_ylim(-1, 1)
 
@@ -320,8 +431,38 @@ class PendulumDataPlotter:
             transform=self.control_ax.transAxes,
         )
 
-        # Save CSV button (ANTES de "MODES")
-        y_pos = 0.68  # Posição acima de MODES
+        # Reset Data button
+        y_pos = 0.68
+        reset_height = 0.05
+        reset_rect = plt.Rectangle(
+            (0.05, y_pos - reset_height),
+            0.9,
+            reset_height,
+            facecolor="lightcoral",
+            edgecolor="darkred",
+            linewidth=2,
+            transform=self.control_ax.transAxes,
+            picker=True,
+        )
+        self.control_ax.add_patch(reset_rect)
+        self.control_ax.text(
+            0.5,
+            y_pos - reset_height / 2,
+            "RESET DATA",
+            ha="center",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+            transform=self.control_ax.transAxes,
+        )
+        self.reset_button = {
+            "rect": reset_rect,
+            "y_min": y_pos - reset_height,
+            "y_max": y_pos,
+        }
+
+        # Save CSV button
+        y_pos -= 0.06
         save_height = 0.05
         save_rect = plt.Rectangle(
             (0.05, y_pos - save_height),
@@ -350,21 +491,8 @@ class PendulumDataPlotter:
             "y_max": y_pos,
         }
 
-        # Mode buttons section (código existente - linha 320)
-        y_pos = 0.60
-        self.control_ax.text(
-            0.5,
-            y_pos,
-            "MODES",
-            ha="center",
-            va="top",
-            fontsize=10,
-            fontweight="bold",
-            transform=self.control_ax.transAxes,
-        )
-
         # Mode buttons section
-        y_pos = 0.60
+        y_pos = 0.54
         self.control_ax.text(
             0.5,
             y_pos,
@@ -380,7 +508,7 @@ class PendulumDataPlotter:
         button_height = 0.048
         button_spacing = 0.055
 
-        # Gerar lista de modos dinamicamente a partir do dicionário
+        # Generate mode list dynamically
         modes = [
             (key, self.control_modes[key]) for key in sorted(self.control_modes.keys())
         ]
@@ -546,7 +674,6 @@ class PendulumDataPlotter:
 
     def store_button_positions(self):
         """Store button positions after setup for click detection"""
-        # This is called after setup_control_panel to ensure positions are stored
         pass
 
     def on_click(self, event):
@@ -562,8 +689,18 @@ class PendulumDataPlotter:
         # Check mode buttons
         for mode_id, btn_info in self.mode_buttons.items():
             if 0.05 <= x <= 0.95 and btn_info["y_min"] <= y <= btn_info["y_max"]:
-                self.send_command(f"MODE:{mode_id}")
-                print(f"Sent: MODE:{mode_id}")
+                self.send_json_command("MODE", mode_id)
+                print(f"Sent JSON: MODE={mode_id}")
+                return
+
+        # Check if Reset Data button was clicked
+        if hasattr(self, "reset_button"):
+            if (
+                0.05 <= x <= 0.95
+                and self.reset_button["y_min"] <= y <= self.reset_button["y_max"]
+            ):
+                print("Reset Data button clicked!")
+                self.reset_data()
                 return
 
         # Check if Save CSV button was clicked
@@ -593,43 +730,47 @@ class PendulumDataPlotter:
                 # Clamp to range
                 ref_value = max(-0.2, min(0.2, ref_value))
 
-                # Send command
-                self.send_command(f"SREF:{ref_value:.3f}")
-                print(f"Sent: SREF:{ref_value:.3f}")
+                # Send JSON command
+                self.send_json_command("SREF", ref_value)
+                print(f"Sent JSON: SREF={ref_value:.3f}")
                 return
 
         # Check apply button
         if hasattr(self, "apply_button"):
             ab = self.apply_button
             if 0.05 <= x <= 0.95 and ab["y_min"] <= y <= ab["y_max"]:
-                self.send_command("AREF")
-                print("Sent: AREF")
+                self.send_json_command("AREF")
+                print("Sent JSON: AREF")
                 return
 
-    def send_command(self, cmd):
-        """Send command to microcontroller"""
+    def send_json_command(self, cmd, value=None):
+        """Send JSON command to microcontroller"""
         if self.serial_port and self.serial_port.is_open:
             try:
-                self.serial_port.write((cmd + "\n").encode("utf-8"))
+                # Build JSON command
+                command = {"cmd": cmd}
+                if value is not None:
+                    command["value"] = value
+
+                # Convert to JSON string and send
+                json_str = json.dumps(command)
+                self.serial_port.write((json_str + "\n").encode("utf-8"))
+                print(f"→ {json_str}")
             except Exception as e:
                 print(f"Error sending command: {e}")
 
     def update_status_display(self):
         """Update status text in control panel"""
-        cal_x_str = (
-            "Ok"
-            if self.cal_x_status == 0
-            else "Error" if self.cal_x_status == 2 else "Running"
-        )
-        cal_t_str = (
-            "Ok"
-            if self.cal_t_status == 0
-            else "Error" if self.cal_t_status == 2 else "Running"
-        )
+        cal_x_str = self.cal_status_map.get(self.cal_x_status, "Unknown")
+        cal_t_str = self.cal_status_map.get(self.cal_t_status, "Unknown")
         mode_str = self.control_modes.get(self.control_mode, "?")
 
-        status = f"""Mode: {mode_str}
-Cal X: {cal_x_str}  Cal T: {cal_t_str}
+        status = f"""Device: {self.device_name}
+Version: {self.device_version}
+
+Mode: {mode_str}
+Cal X: {cal_x_str}
+Cal T: {cal_t_str}
 
 Active: {self.ref_pos:+.3f}m
 """
@@ -675,11 +816,16 @@ Active: {self.ref_pos:+.3f}m
                         "Timestamp",
                         "Real_Time",
                         "Target_Vel",
+                        "Current_Vel",
                         "PWM_Freq",
                         "Cart_Pos",
+                        "Cart_Pos_Filt",
                         "Cart_Vel",
+                        "Cart_Vel_Filt",
                         "Pendulum_Pos",
+                        "Pendulum_Pos_Filt",
                         "Pendulum_Vel",
+                        "Pendulum_Vel_Filt",
                     ]
                 )
 
@@ -690,11 +836,16 @@ Active: {self.ref_pos:+.3f}m
                             self.time_data[i],
                             self.real_time[i],
                             self.target_vel[i],
+                            self.current_vel[i],
                             self.pwm_freq[i],
                             self.cart_pos[i],
+                            self.cart_pos_filt[i],
                             self.cart_vel[i],
+                            self.cart_vel_filt[i],
                             self.pendulum_pos[i],
+                            self.pendulum_pos_filt[i],
                             self.pendulum_vel[i],
+                            self.pendulum_vel_filt[i],
                         ]
                     )
 
@@ -735,7 +886,7 @@ Active: {self.ref_pos:+.3f}m
                         line = line.strip()
 
                         if line:
-                            self.process_line(line)
+                            self.process_json_line(line)
 
                 time.sleep(0.01)
 
@@ -744,112 +895,116 @@ Active: {self.ref_pos:+.3f}m
                 self.running = False
                 break
 
-    def process_line(self, line):
-        """Process incoming line based on header"""
-        # Check for headers
-        if line.startswith("[STATUS]"):
-            # Extract data after header
-            data_part = line[8:]  # Remove "[STATUS]"
-            self.parse_status_data(data_part)
-        elif line.startswith("[INFO]"):
-            # Print info messages to console
-            info_msg = line[6:]  # Remove "[INFO]"
-            print(f"INFO: {info_msg}")
-        elif line.startswith("[RESPONSE]"):
-            # Print response messages to console
-            response_msg = line[10:]  # Remove "[RESPONSE]"
-            print(f"RESPONSE: {response_msg}")
-        else:
-            # Unknown format, print to console
-            print(f"UNKNOWN: {line}")
-
-    def parse_status_data(self, data_str):
-        """
-        Parse STATUS data line
-        Format: timestamp;control_mode;cal_x;cal_t;target_vel;motor_acc;pwm_freq;cart_pos;cart_vel;pend_pos;pend_vel;ref_pos;shadow_ref
-        """
+    def process_json_line(self, line):
+        """Process incoming JSON line"""
         try:
-            parts = data_str.split(";")
-            if len(parts) >= 13:
-                current_time = time.time()
-                if self.start_time is None:
-                    self.start_time = current_time
+            # Parse JSON
+            data = json.loads(line)
 
-                # Parse all values
-                timestamp = int(parts[0])
-                control_mode = int(parts[1])
-                cal_x_status = int(parts[2])
-                cal_t_status = int(parts[3])
-                target_vel = self._parse_float_or_nan(parts[4])
-                motor_acc = self._parse_float_or_nan(parts[5])  # Not used for plotting
-                pwm_freq = int(parts[6])
-                cart_pos = self._parse_float_or_nan(parts[7])
-                cart_vel = self._parse_float_or_nan(parts[8])
-                pendulum_pos = self._parse_float_or_nan(parts[9])
-                pendulum_vel = self._parse_float_or_nan(parts[10])
-                ref_pos = self._parse_float_or_nan(parts[11])
-                shadow_ref = self._parse_float_or_nan(parts[12])
+            # Check message type
+            if "type" in data:
+                # INFO message
+                if data["type"] == "INFO":
+                    self.device_name = data.get("name", "Unknown")
+                    self.device_version = data.get("version", "Unknown")
+                    print(f"ℹ INFO: {data.get('name')} v{data.get('version')}")
+                    print(f"  Author: {data.get('author', 'Unknown')}")
+                    print(
+                        f"  Date: {data.get('date', 'Unknown')} {data.get('time', '')}"
+                    )
 
-                # Check if all critical values are valid (not NaN)
-                critical_values = [
-                    target_vel,
-                    motor_acc,
-                    pwm_freq,
-                    cart_pos,
-                    cart_vel,
-                    pendulum_pos,
-                    pendulum_vel,
-                    ref_pos,
-                    shadow_ref,
-                ]
-                if all(not np.isnan(v) for v in critical_values):
-                    data = {
-                        "timestamp": timestamp,
-                        "real_time": current_time - self.start_time,
-                        "control_mode": control_mode,
-                        "cal_x_status": cal_x_status,
-                        "cal_t_status": cal_t_status,
-                        "target_vel": target_vel,
-                        "motor_acc": motor_acc,
-                        "pwm_freq": pwm_freq,
-                        "cart_pos": cart_pos,
-                        "cart_vel": cart_vel,
-                        "pendulum_pos": pendulum_pos,
-                        "pendulum_vel": pendulum_vel,
-                        "ref_pos": ref_pos,
-                        "shadow_ref": shadow_ref,
-                    }
-
-                    # Update status variables
-                    self.control_mode = data["control_mode"]
-                    self.cal_x_status = data["cal_x_status"]
-                    self.cal_t_status = data["cal_t_status"]
-                    self.ref_pos = data["ref_pos"]
-                    self.shadow_ref = data["shadow_ref"]
-
-                    # Add to queue for plotting
-                    self.data_queue.put(data)
+            elif "status" in data:
+                # RESPONSE message
+                status = data.get("status", "unknown")
+                msg = data.get("msg", "")
+                if status == "ok":
+                    print(f"✓ {msg}")
                 else:
-                    # Data contains NaN, skip plotting but still update status if available
-                    self.control_mode = control_mode
-                    self.cal_x_status = cal_x_status
-                    self.cal_t_status = cal_t_status
-                    if not np.isnan(ref_pos):
-                        self.ref_pos = ref_pos
-                    if not np.isnan(shadow_ref):
-                        self.shadow_ref = shadow_ref
+                    print(f"✗ ERROR: {msg}")
+                    if "value" in data:
+                        print(f"  Value: {data['value']}")
 
-        except (ValueError, IndexError) as e:
-            # Silently ignore parse errors
-            pass
+            elif "ts" in data:
+                # STATUS message
+                self.parse_status_data(data)
 
-    def _parse_float_or_nan(self, value_str):
-        """Parse float value, return NaN if invalid"""
+            else:
+                # Unknown JSON format
+                print(f"⚠ Unknown JSON: {line}")
+
+        except json.JSONDecodeError as e:
+            # Not valid JSON
+            print(f"⚠ Invalid JSON: {line}")
+            print(f"  Error: {e}")
+
+    def parse_status_data(self, data):
+        """
+        Parse STATUS JSON data
+        Expected fields: ts, mode, cal_x_status, cal_t_status, mot_target_vel,
+                        mot_current_vel, mot_acc, mot_pwm, cart_pos, cart_vel,
+                        cart_pos_filt, cart_vel_filt, pend_pos, pend_vel,
+                        pend_pos_filt, pend_vel_filt, ref_pos, ref_shadow
+        """
         try:
-            value = float(value_str)
-            return value
-        except (ValueError, TypeError):
-            return np.nan
+            current_time = time.time()
+            if self.start_time is None:
+                self.start_time = current_time
+
+            # Extract all values with defaults
+            timestamp = data.get("ts", 0)
+            control_mode = data.get("mode", 0)
+            cal_x_status = data.get("cal_x_status", 0)
+            cal_t_status = data.get("cal_t_status", 0)
+            target_vel = data.get("mot_target_vel", 0.0)
+            current_vel = data.get("mot_current_vel", 0.0)
+            motor_acc = data.get("mot_acc", 0.0)
+            pwm_freq = data.get("mot_pwm", 0)
+            cart_pos = data.get("cart_pos", 0.0)
+            cart_vel = data.get("cart_vel", 0.0)
+            cart_pos_filt = data.get("cart_pos_filt", 0.0)
+            cart_vel_filt = data.get("cart_vel_filt", 0.0)
+            pendulum_pos = data.get("pend_pos", 0.0)
+            pendulum_vel = data.get("pend_vel", 0.0)
+            pendulum_pos_filt = data.get("pend_pos_filt", 0.0)
+            pendulum_vel_filt = data.get("pend_vel_filt", 0.0)
+            ref_pos = data.get("ref_pos", 0.0)
+            shadow_ref = data.get("ref_shadow", 0.0)
+
+            # Create data dict for plotting
+            plot_data = {
+                "timestamp": timestamp,
+                "real_time": current_time - self.start_time,
+                "control_mode": control_mode,
+                "cal_x_status": cal_x_status,
+                "cal_t_status": cal_t_status,
+                "target_vel": target_vel,
+                "current_vel": current_vel,
+                "motor_acc": motor_acc,
+                "pwm_freq": pwm_freq,
+                "cart_pos": cart_pos,
+                "cart_vel": cart_vel,
+                "cart_pos_filt": cart_pos_filt,
+                "cart_vel_filt": cart_vel_filt,
+                "pendulum_pos": pendulum_pos,
+                "pendulum_vel": pendulum_vel,
+                "pendulum_pos_filt": pendulum_pos_filt,
+                "pendulum_vel_filt": pendulum_vel_filt,
+                "ref_pos": ref_pos,
+                "shadow_ref": shadow_ref,
+            }
+
+            # Update status variables
+            self.control_mode = plot_data["control_mode"]
+            self.cal_x_status = plot_data["cal_x_status"]
+            self.cal_t_status = plot_data["cal_t_status"]
+            self.ref_pos = plot_data["ref_pos"]
+            self.shadow_ref = plot_data["shadow_ref"]
+
+            # Add to queue for plotting
+            self.data_queue.put(plot_data)
+
+        except Exception as e:
+            print(f"Error parsing status data: {e}")
 
     def update_plot(self, frame):
         """Update plot with new data from queue"""
@@ -860,12 +1015,36 @@ Active: {self.ref_pos:+.3f}m
                 self.time_data.append(data["timestamp"])
                 self.real_time.append(data["real_time"])
                 self.target_vel.append(data["target_vel"])
+                self.current_vel.append(data["current_vel"])
                 self.motor_acc.append(data["motor_acc"])
                 self.pwm_freq.append(data["pwm_freq"])
                 self.cart_pos.append(data["cart_pos"])
                 self.cart_vel.append(data["cart_vel"])
+                self.cart_pos_filt.append(data["cart_pos_filt"])
+                self.cart_vel_filt.append(data["cart_vel_filt"])
+
+                # Pendulum position with unwrapping
+                pend_pos = data["pendulum_pos"]
+                if len(self.pendulum_pos) > 0:
+                    # Calculate difference from last position
+                    last_pos = self.pendulum_pos[-1]
+                    diff = pend_pos - last_pos
+
+                    # Unwrap if there's a discontinuity (jump > π)
+                    if diff > np.pi:
+                        pend_pos -= 2 * np.pi
+                    elif diff < -np.pi:
+                        pend_pos += 2 * np.pi
+
+                    # Accumulate unwrapped position
+                    if not hasattr(self, "pendulum_pos_offset"):
+                        self.pendulum_pos_offset = 0
+                    self.pendulum_pos_offset += (pend_pos - last_pos) - diff
+
                 self.pendulum_pos.append(data["pendulum_pos"])
                 self.pendulum_vel.append(data["pendulum_vel"])
+                self.pendulum_pos_filt.append(data["pendulum_pos_filt"])
+                self.pendulum_vel_filt.append(data["pendulum_vel_filt"])
                 data_updated = True
             except queue.Empty:
                 break
@@ -873,21 +1052,30 @@ Active: {self.ref_pos:+.3f}m
         if data_updated and len(self.real_time) > 1:
             time_array = np.array(self.real_time)
 
+            # Unwrap pendulum position for display
+            pendulum_pos_unwrapped = np.unwrap(self.pendulum_pos)
+            pendulum_pos_filt_unwrapped = np.unwrap(self.pendulum_pos_filt)
+
             # Update all plots
             self.lines[0].set_data(time_array, self.target_vel)
-            self.lines[1].set_data(time_array, self.pwm_freq)
-            self.lines[2].set_data(time_array, self.cart_pos)
-            self.lines[3].set_data(time_array, self.cart_vel)
-            self.lines[4].set_data(time_array, self.pendulum_pos)
-            self.lines[5].set_data(time_array, self.pendulum_vel)
+            self.lines[1].set_data(time_array, self.current_vel)
+            self.lines[2].set_data(time_array, self.pwm_freq)
+            self.lines[3].set_data(time_array, self.cart_pos)
+            self.lines[4].set_data(time_array, self.cart_pos_filt)
+            self.lines[5].set_data(time_array, self.cart_vel)
+            self.lines[6].set_data(time_array, self.cart_vel_filt)
+            self.lines[7].set_data(time_array, pendulum_pos_unwrapped)
+            self.lines[8].set_data(time_array, pendulum_pos_filt_unwrapped)
+            self.lines[9].set_data(time_array, self.pendulum_vel)
+            self.lines[10].set_data(time_array, self.pendulum_vel_filt)
 
             data_lists = [
-                list(self.target_vel),
+                list(self.target_vel) + list(self.current_vel),
                 list(self.pwm_freq),
-                list(self.cart_pos),
-                list(self.cart_vel),
-                list(self.pendulum_pos),
-                list(self.pendulum_vel),
+                list(self.cart_pos) + list(self.cart_pos_filt),
+                list(self.cart_vel) + list(self.cart_vel_filt),
+                list(pendulum_pos_unwrapped) + list(pendulum_pos_filt_unwrapped),
+                list(self.pendulum_vel) + list(self.pendulum_vel_filt),
             ]
 
             for ax, data_list in zip(self.axes, data_lists):
@@ -937,8 +1125,10 @@ Active: {self.ref_pos:+.3f}m
             cache_frame_data=False,
         )
 
+        print("=" * 60)
         print("Plotting started. Close the window to stop.")
-        print("Click on control panel buttons to send commands.")
+        print("Click on control panel buttons to send JSON commands.")
+        print("=" * 60)
 
         try:
             plt.show(block=True)
@@ -974,7 +1164,11 @@ Active: {self.ref_pos:+.3f}m
 def main():
     """Main entry point - Starts with GUI setup."""
 
-    # 1. Cria e exibe o menu de configuração
+    print("=" * 60)
+    print("Inverted Pendulum Real-Time Plotter - JSON Edition")
+    print("=" * 60)
+
+    # 1. Create and show setup menu
     root = tk.Tk()
 
     try:
@@ -991,12 +1185,13 @@ def main():
         print("Setup cancelado pelo usuário.")
         sys.exit(0)
 
-    # Pausa para garantir que o Tkinter finalizou completamente
+    # Small pause to ensure Tkinter finishes completely
     time.sleep(0.5)
 
-    # 2. Inicia o plotter com as configurações selecionadas
+    # 2. Start plotter with selected settings
     print(
-        f"Iniciando plotter com: Porta={settings['port']}, Baudrate={settings['baudrate']}, Pontos={settings['max_points']}"
+        f"Iniciando plotter com: Porta={settings['port']}, "
+        f"Baudrate={settings['baudrate']}, Pontos={settings['max_points']}"
     )
     plotter = PendulumDataPlotter(
         port=settings["port"],

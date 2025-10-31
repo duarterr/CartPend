@@ -86,6 +86,10 @@
 // Auxiliary functions
 #include "Aux_Functions.hpp"
 
+// JSON support functions
+#include "Json_Builder.hpp"
+#include "Json_Parser.hpp"
+
 // Digital controller functions
 #include "StateFeedback_TivaC.hpp"
 #include "Pid_TivaC.hpp"
@@ -138,6 +142,12 @@ extern "C"
 #define DEVICE_FW_VERSION       "1.0"                  // Firmware version
 #define DEVICE_FW_AUTHOR        "Renan Duarte"         // Firmware author
 
+// Velocity calibration
+#define CAL_KV_ITERATIONS       3                      // Number of calibration runs
+const float CAL_KV_VELOCITIES[] = {0.25, 0.625, 1};    // Different velocities to test
+const float CAL_KV_END_POSITIONS[] = {0.175, 0.15, 0.1}; // Positions to stop capturing data
+#define CAL_KV_TOTAL_STEPS      (2*CAL_KV_ITERATIONS)  // Total calibration steps
+
 // Application timming
 #define TIMER_FREQUENCY         1000                   // Systick timer frequency in Hz
 #define CONTROL_LOOP_FREQUENCY  200                    // Control loop frequency in Hz
@@ -153,40 +163,40 @@ extern "C"
 #define BUTTON_LONG_TIMEOUT     1000                   // Button long press timeout in ms
 
 // UART
-#define UART_TX_FREQUENCY       30                     // UART TX device status frequency
+#define UART_TX_FREQUENCY       25                     // UART TX device status frequency
 #define UART_RX_FREQUENCY       10                     // UART RX command pooling frequency
 #define UART_BAUD_RATE          115200                 // UART baud rate
 #define UART_MODE               (UART_CONFIG_PAR_NONE | UART_CONFIG_STOP_ONE | UART_CONFIG_WLEN_8) // UART mode configuration
 
 // Encoder - Theta
-#define ENCODER_T_FREQUENCY     200                     // Encoder scan frequency
-#define ENCODER_T_PPR           4000                    // Encoder maximum counter value
-#define ENCODER_T_CAL_CYCLES    10                      // Oscillations required for calibration
+#define ENCODER_T_FREQUENCY     200                    // Encoder scan frequency
+#define ENCODER_T_PPR           4000                   // Encoder maximum counter value
+#define ENCODER_T_CAL_CYCLES    10                     // Oscillations required for calibration
 
 // Encoder - X
-#define ENCODER_X_FREQUENCY     200                     // Encoder scan frequency
-#define ENCODER_X_MAX           40600                   // Encoder maximum counter value. Can be adjusted with calibration
-#define ENCODER_X_KV            477.565938866364        // Conversion factor between PPS and m/s. Can be adjusted with calibration
+#define ENCODER_X_FREQUENCY     200                    // Encoder scan frequency
+#define ENCODER_X_MAX           40600                  // Encoder maximum counter value. Can be adjusted with calibration
+const float ENCODER_X_KV = 477.565938866364;           // Conversion factor between PPS and m/s. Can be adjusted with calibration
 
 // RGB LED
 #define RGB_PWM_FREQ            1000                   // RGB LED PWM frequency in Hz
 #define RGB_REFRESH_FREQUENCY   10                     // RGB LED refresh frequency in Hz
 
 // Stepper
-#define STEPPER_KV              152665.797                              // Conversion factor between PPS and m/s (Steps_Rev * Microsteps / (pi*Pulley_pitch_diameter)). Can be adjusted with calibration
-#define STEPPER_PPS_MAX         180000                                  // Maximum velocity (pulses per second)
-#define STEPPER_VEL_MAX         ((float)STEPPER_PPS_MAX/STEPPER_KV)     // Maximum velocity (m/s)
-#define STEPPER_ACC_MAX         8                                       // Maximum acceleration (m/s^2)
-#define STEPPER_REFRESH_FREQ    1000                                    // Velocity control frequency
-#define STEPPER_VEL_CAL         0.25                                    // Velocity during axis calibration
+const float STEPPER_KV = 152665.797;                   // Conversion factor between PPS and m/s (Steps_Rev * Microsteps / (pi*Pulley_pitch_diameter)). Can be adjusted with calibration
+#define STEPPER_PPS_MAX         180000                 // Maximum velocity (pulses per second)
+const float STEPPER_VEL_MAX = ((float)STEPPER_PPS_MAX/STEPPER_KV); // Maximum velocity (m/s)
+#define STEPPER_ACC_MAX         8                      // Maximum acceleration (m/s^2)
+#define STEPPER_REFRESH_FREQ    1000                   // Velocity control frequency
+#define STEPPER_VEL_CAL         0.25                   // Velocity during axis calibration
 
 // X-axis
-#define X_VALUE_TOTAL_M         0.4037F                 // Maximum travel distance in m
-#define X_VALUE_ABS_M           (X_VALUE_TOTAL_M/2)     // Axis limits in m (-X_VALUE_ABS_M to X_VALUE_ABS_M)
+const float X_VALUE_TOTAL_M = 0.4037F;                 // Maximum travel distance in m
+const float X_VALUE_ABS_M = (X_VALUE_TOTAL_M/2);       // Axis limits in m (-X_VALUE_ABS_M to X_VALUE_ABS_M)
 
 // Theta-axis
-#define T_VALUE_MAX_RAD         (2*PI)                  // Maximum angle in radians
-#define T_VALUE_ABS_MAX         PI                      // Axis limits in radians (-T_VALUE_ABS_MAX to T_VALUE_ABS_MAX)
+const float T_VALUE_MAX_RAD = (2*PI);                  // Maximum angle in radians
+const float T_VALUE_ABS_MAX = PI;                      // Axis limits in radians (-T_VALUE_ABS_MAX to T_VALUE_ABS_MAX)
 
 // ------------------------------------------------------------------------------------------------------- //
 // Hardware defines
@@ -310,7 +320,7 @@ extern "C"
 #define ENCODER_X_INTERVAL      (TIMER_FREQUENCY / ENCODER_X_FREQUENCY)
 
 // ------------------------------------------------------------------------------------------------------- //
-// Enumerations
+// Structs and enumerations
 // ------------------------------------------------------------------------------------------------------- //
 
 // Calibration status flags
@@ -321,6 +331,35 @@ typedef enum
     CAL_RUNNING,                // Calibration is running
     sizeof_calibration_status_t // Do not change.
 } calibration_status_t;
+
+// Individual calibration data structure
+typedef struct {
+    int32_t Offset;
+    uint32_t Max;
+    float Kv;
+    calibration_status_t Status;
+    uint8_t Progress;
+} calibration_data_t;
+
+// Master calibration structure
+typedef struct {
+    calibration_data_t Theta;
+    calibration_data_t CartPos;
+    calibration_data_t CartVel;
+    calibration_data_t MotorVel;
+    bool AllDone;
+    bool AnyRunning;
+} calibration_master_t;
+
+// Master calibration structure - Default values
+#define calibration_master_t_default { \
+    .Theta = {0, ENCODER_T_PPR, 1.0f, CAL_PENDING, 0}, \
+    .CartPos = {1000, ENCODER_X_MAX, ENCODER_X_KV, CAL_DONE, 0}, \
+    .CartVel = {0, 0, ENCODER_X_KV, CAL_DONE, 0}, \
+    .MotorVel = {0, 0, STEPPER_KV, CAL_DONE, 0}, \
+    .AllDone = false, \
+    .AnyRunning = false, \
+}
 
 // Control modes
 typedef enum
@@ -333,10 +372,6 @@ typedef enum
     CONTROL_FULL_LQR,       // LQR control - Cart and pendulum
     sizeof_control_mode_t   // Do not change.
 } control_mode_t;
-
-// ------------------------------------------------------------------------------------------------------- //
-// Structs
-// ------------------------------------------------------------------------------------------------------- //
 
 // Cart variables
 typedef struct
@@ -363,16 +398,6 @@ typedef struct
     .Pos = PI, \
     .Vel = 0, \
 }
-
-// Calibration variables
-typedef struct
-{
-    calibration_status_t Status;    // Status
-    uint8_t Progress;               // Progress (0 to 100)
-    int32_t Offset;                 // Encoder counter offset
-    uint32_t Max;                   // Maximum encoder counter value
-    float Kv;                       // Velocity compensation gain (m/(s*pulses))
-} calibration_t;
 
 // Device firmware info struct
 typedef struct
