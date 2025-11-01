@@ -28,16 +28,16 @@ void PendulumUpdateState ();
 // Move cart to home position (-X_VALUE_ABS_M)
 void CalibrationCartGoHome ();
 
-// Move cart to specific position (Requires cart position to be calibrated)
+// Move cart to specific position - Must be called AFTER CalibrationCartGoHome
 void CalibrationCartGoPosition (float Position);
 
 // Calibrate cart X position limits
 void CalibrationCartPos ();
 
-// Calibrate cart Kv - Must be called with the pendulum detached and AFTER CalibrationCartPos
+// Calibrate cart Kv - Must be called AFTER CalibrationCartPos
 void CalibrationCartVel ();
 
-// Calibrate motor Kv - Must be called with the pendulum detached and AFTER CalibrationCartPos
+// Calibrate motor Kv - Must be called AFTER CalibrationCartPos
 void CalibrationMotorVel ();
 
 // Calibrate pendulum angle
@@ -72,6 +72,9 @@ void DeviceUpdateControl();
 
 // Apply PosRefShaddow to controllers
 void ControlSetPosReference (void);
+
+// Get PosRef from controllers
+float ControlGetPosReference (void);
 
 // SysTick interrupt service routine
 void IsrSysTick ();
@@ -108,24 +111,24 @@ Pid ControllerCartPid;
 Lead ControllerCartLead;
 
 // Cart state feedback controller object - From StateFeedback_TivaC class
-StateFeedback ControllerCartSF;
+StateFeedback ControllerCartLqr;
 
 // Pendulum state feedback controller object - From StateFeedback_TivaC class
 StateFeedback ControllerPendSF;
 
-// Full state LQR controller object - From StateFeedback_TivaC class
-StateFeedback ControllerFullLqr;
+// Cart and pendulum full state feedback controller object - From StateFeedback_TivaC class
+StateFeedback ControllerCartPendLqr;
 
 // ------------------------------------------------------------------------------------------------------- //
 // Variables
 // ------------------------------------------------------------------------------------------------------- //
 
 // Cart-related variables
-volatile cart_t Cart = cart_t_default;
+volatile cart_t CartRaw = cart_t_default;
 volatile cart_t CartFiltered = cart_t_default;
 
 // Pendulum-related variables
-volatile pendulum_t Pendulum = pendulum_t_default;
+volatile pendulum_t PendulumRaw = pendulum_t_default;
 volatile pendulum_t PendulumFiltered = pendulum_t_default;
 
 // Control mode
@@ -145,37 +148,58 @@ volatile uint32_t SysTickCounter = 0;
 // Calibration data
 volatile calibration_master_t Cal = calibration_master_t_default;
 
-
-uint8_t Start = 0;
-
 // ------------------------------------------------------------------------------------------------------- //
 // Update cart state based on encoder readings
 // ------------------------------------------------------------------------------------------------------- //
 
 void CartUpdateState()
 {
-    // Calculate cart absolute position - Remove offset added during calibration
-    Cart.Pos = ((float)X_VALUE_TOTAL_M/Cal.CartPos.Max)*((int32_t)EncoderX.GetPos() - Cal.CartPos.Offset) - X_VALUE_ABS_M;
+    // Cached scale factors to avoid unnecessary recalculations
+    static float PosScale = 0.0f;       // Position scaling factor [m/count]
+    static float VelScale = 0.0f;       // Velocity scaling factor [m/s per raw unit]
+    static uint32_t LastCalMax = 0;     // Last known calibration max value
+    static float LastCalKv = 0.0f;      // Last known velocity calibration constant
 
-    // Calculate cart velocity
-    Cart.Vel = (EncoderX.GetVel() / Cal.CartPos.Kv) * EncoderX.GetDir();
-
-    // Filtered velocity
-    static float CartPosLast = 0;
-    static bool FirstRun = true;
-
-    if (FirstRun)
+    // Check if calibration parameters have changed
+    if ((Cal.CartPos.Max != LastCalMax) || (Cal.CartPos.Kv != LastCalKv))
     {
-        CartPosLast = Cart.Pos;
-        CartFiltered.Pos = Cart.Pos;
-        CartFiltered.Vel = 0;
-        FirstRun = false;
+        // Recalculate scaling factors based on current calibration
+        PosScale = (float)X_VALUE_TOTAL_M / Cal.CartPos.Max;
+        VelScale = 1.0f / Cal.CartPos.Kv;
+        LastCalMax = Cal.CartPos.Max;
+        LastCalKv = Cal.CartPos.Kv;
     }
-    else
+
+    // Compute cart position
+    CartRaw.Pos = (PosScale * ((int32_t)EncoderX.GetPos() - Cal.CartPos.Offset)) - X_VALUE_ABS_M;
+
+    // Compute cart velocity
+    CartRaw.Vel = (VelScale * EncoderX.GetVel()) * EncoderX.GetDir();
+
+    // Moving average filter - Decimation from ENCODER_T_FREQUENCY to CONTROL_LOOP_FREQUENCY
+
+    // Calculate decimation factor (ENCODER_X_FREQUENCY / CONTROL_LOOP_FREQUENCY)
+    static const uint8_t DECIMATION_FACTOR = ENCODER_X_FREQUENCY / CONTROL_LOOP_FREQUENCY;
+    static const float INV_DECIMATION = 1.0f / DECIMATION_FACTOR;
+
+    static uint8_t SampleCounter = 0;
+    static float PosSum = 0.0f;
+    static float VelSum = 0.0f;
+
+    // Accumulate position and velocity
+    PosSum += CartRaw.Pos;
+    VelSum += CartRaw.Vel;
+
+    // Every DECIMATION_FACTOR samples, compute average
+    if (++SampleCounter >= DECIMATION_FACTOR)
     {
-        CartFiltered.Pos = Cart.Pos;
-        CartFiltered.Vel = (CartFiltered.Pos - CartPosLast) * ENCODER_X_FREQUENCY;
-        CartPosLast = CartFiltered.Pos;
+        CartFiltered.Pos = PosSum * INV_DECIMATION;
+        CartFiltered.Vel = VelSum * INV_DECIMATION;
+
+        // Reset accumulators
+        PosSum = 0.0f;
+        VelSum = 0.0f;
+        SampleCounter = 0;
     }
 }
 
@@ -185,40 +209,78 @@ void CartUpdateState()
 
 void PendulumUpdateState()
 {
-    // Calculate pendulum absolute position
-    Pendulum.Pos = ((float)T_VALUE_MAX_RAD/Cal.Theta.Max)*((int32_t)EncoderT.GetPos() - Cal.Theta.Offset) - T_VALUE_ABS_MAX;
+    // Cached scale factors to avoid unnecessary recalculations
+    static float PosScale = 0.0f;       // Position scaling factor [rad/count]
+    static float VelScale = 0.0f;       // Velocity scaling factor [rad/s per raw unit]
+    static float LastCalMax = 0.0f;     // Last known calibration max value
 
-    // Calculate pendulum velocity
-    Pendulum.Vel = (((T_VALUE_MAX_RAD * EncoderT.GetVel()) / Cal.Theta.Max) * ENCODER_T_FREQUENCY) * EncoderT.GetDir();
-
-    // Filtered velocity using unwrapped angle difference
-    static float PendulumPosLast = 0;
-    static bool FirstRun = true;
-
-    if (FirstRun)
+    // Check if calibration parameters have changed
+    if (Cal.Theta.Max != LastCalMax)
     {
-        PendulumPosLast = Pendulum.Pos;
-        PendulumFiltered.Pos = Pendulum.Pos;
-        PendulumFiltered.Vel = 0;
-        FirstRun = false;
+        // Recalculate scaling factors based on current calibration
+        PosScale = (float)T_VALUE_MAX_RAD / Cal.Theta.Max;
+        VelScale = PosScale * ENCODER_T_FREQUENCY;
+        LastCalMax = Cal.Theta.Max;
+    }
+
+    // Position
+    PendulumRaw.Pos = (PosScale * ((int32_t)EncoderT.GetPos() - Cal.Theta.Offset)) - T_VALUE_ABS_MAX;
+
+    // Velocity
+    PendulumRaw.Vel = (VelScale * EncoderT.GetVel()) * EncoderT.GetDir();
+
+
+    // Moving average filter - Decimation from ENCODER_T_FREQUENCY to CONTROL_LOOP_FREQUENCY
+
+    // Calculate decimation factor
+    static const uint8_t DECIMATION_FACTOR = ENCODER_T_FREQUENCY / CONTROL_LOOP_FREQUENCY;
+    static const float INV_DECIMATION = 1.0f / DECIMATION_FACTOR;
+
+    static uint8_t SampleCounter = 0;
+    static float PosSum = 0.0f;
+    static float VelSum = 0.0f;
+    static float LastUnwrappedPos = 0.0f;
+    static bool FirstSample = true;
+
+    // Unwrap current position to handle angle wrapping
+    float UnwrappedPos = PendulumRaw.Pos;
+
+    if (!FirstSample)
+    {
+        float diff = UnwrappedPos - LastUnwrappedPos;
+
+        // Correct wrap-around discontinuities
+        if (diff > M_PI)
+            UnwrappedPos -= T_VALUE_MAX_RAD;
+        else if (diff < -M_PI)
+            UnwrappedPos += T_VALUE_MAX_RAD;
     }
     else
+        FirstSample = false;
+
+    LastUnwrappedPos = UnwrappedPos;
+
+    // Accumulate unwrapped values
+    PosSum += UnwrappedPos;
+    VelSum += PendulumRaw.Vel;
+
+    // Every DECIMATION_FACTOR samples, compute average and wrap back
+    if (++SampleCounter >= DECIMATION_FACTOR)
     {
-        // Calculate angular difference with unwrapping
-        float diff = Pendulum.Pos - PendulumPosLast;
+        float PosAvg = PosSum * INV_DECIMATION;
 
-        // Unwrap the angle difference (shortest path)
-        while (diff > M_PI) diff -= 2.0f * M_PI;
-        while (diff < -M_PI) diff += 2.0f * M_PI;
+        // Wrap back to [-π, π]
+        while (PosAvg > M_PI) PosAvg -= T_VALUE_MAX_RAD;
+        while (PosAvg < -M_PI) PosAvg += T_VALUE_MAX_RAD;
 
-        // Calculate filtered velocity from unwrapped difference
-        PendulumFiltered.Vel = diff * ENCODER_T_FREQUENCY;
+        PendulumFiltered.Pos = PosAvg;
+        PendulumFiltered.Vel = VelSum * INV_DECIMATION;
 
-        // Position filter (optional - same as raw for angles)
-        PendulumFiltered.Pos = Pendulum.Pos;
+        // Reset accumulators
+        PosSum = 0.0f;
+        VelSum = 0.0f;
+        SampleCounter = 0;
     }
-
-    PendulumPosLast = Pendulum.Pos;
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -259,7 +321,7 @@ void CalibrationCartGoHome ()
 }
 
 // ------------------------------------------------------------------------------------------------------- //
-// Move cart to specific position (Requires cart position to be calibrated)
+// Move cart to specific position - Must be called AFTER CalibrationCartGoHome
 // ------------------------------------------------------------------------------------------------------- //
 
 void CalibrationCartGoPosition (float Position)
@@ -269,26 +331,26 @@ void CalibrationCartGoPosition (float Position)
     Cal.CartPos.Progress = 0;
     CalibrationUpdateFlags();
 
-    float StartPos = Cart.Pos;
-    float DeltaPos = Cart.Pos - Position;
+    float StartPos = CartFiltered.Pos;
+    float DeltaPos = CartFiltered.Pos - Position;
     float TotalDistance = Aux::FastFabs(DeltaPos);
 
     // Start stepper
     if (DeltaPos > 0)
     {
         Stepper.Move(-STEPPER_VEL_CAL, 0.25);
-        while ((Cart.Pos > Position) && Stepper.GetEnable())
+        while ((CartFiltered.Pos > Position) && Stepper.GetEnable())
         {
-            float Traveled = Aux::FastFabs(Cart.Pos - StartPos);
+            float Traveled = Aux::FastFabs(CartFiltered.Pos - StartPos);
             Cal.CartPos.Progress = (Traveled / TotalDistance) * 100;
         }
     }
     else if (DeltaPos < 0)
     {
         Stepper.Move(STEPPER_VEL_CAL, 0.25);
-        while ((Cart.Pos < Position) && Stepper.GetEnable())
+        while ((CartFiltered.Pos < Position) && Stepper.GetEnable())
         {
-            float Traveled = Aux::FastFabs(Cart.Pos - StartPos);
+            float Traveled = Aux::FastFabs(CartFiltered.Pos - StartPos);
             Cal.CartPos.Progress = (Traveled / TotalDistance) * 100;
         }
     }
@@ -369,7 +431,7 @@ void CalibrationCartVel ()
         uint32_t SampleCounter = 0;
 
         // Collect samples until end position is reached
-        while ((Cart.Pos > -CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
+        while ((CartFiltered.Pos > -CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
         {
             EncoderVelSum += EncoderX.GetVel();
             SampleCounter++;
@@ -412,7 +474,7 @@ void CalibrationCartVel ()
         SampleCounter = 0;
 
         // Collect samples until end position is reached
-        while ((Cart.Pos < CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
+        while ((CartFiltered.Pos < CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
         {
             EncoderVelSum += EncoderX.GetVel();
             SampleCounter++;
@@ -482,7 +544,7 @@ void CalibrationMotorVel ()
         uint32_t SampleCounter = 0;
 
         // Collect samples until end position is reached
-        while ((Cart.Pos > -CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
+        while ((CartFiltered.Pos > -CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
         {
             EncoderVelSum += EncoderX.GetVel();
             PwmSum += Stepper.GetPwmFrequency();
@@ -518,7 +580,7 @@ void CalibrationMotorVel ()
         SampleCounter = 0;
 
         // Collect samples until end position is reached
-        while ((Cart.Pos < CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
+        while ((CartFiltered.Pos < CAL_KV_END_POSITIONS[IterationCounter]) && (Stepper.GetEnable()))
         {
             EncoderVelSum += EncoderX.GetVel();
             PwmSum += Stepper.GetPwmFrequency();
@@ -680,67 +742,67 @@ void UartProcessCommand()
     // Check if JSON is valid
     if (!Parser.isValid())
     {
-        response.addString("status", "error");
-        response.addString("msg", "invalid_json");
+        response.addString("STATUS", "ERROR");
+        response.addString("MSG", "INVALID_JSON");
     }
 
     else
     {
         // Extract command field
         char command[32];
-        if (!Parser.getString("cmd", command, sizeof(command)))
+        if (!Parser.getString("CMD", command, sizeof(command)))
         {
-            response.addString("status", "error");
-            response.addString("msg", "missing_cmd_field");
+            response.addString("STATUS", "ERROR");
+            response.addString("MSG", "MISSING_CMD_FIELD");
         }
         // MODE command - Change control mode
         else if (strcmp(command, "MODE") == 0)
         {
             int32_t mode;
-            if (Parser.getInt("value", &mode) && mode >= 0 && mode < sizeof_control_mode_t)
+            if (Parser.getInt("VALUE", &mode) && mode >= 0 && mode < sizeof_control_mode_t)
             {
                 ControlMode = (control_mode_t)mode;
-                response.addString("status", "ok");
-                response.addString("msg", "mode_changed");
-                response.addInt("value", mode);
+                response.addString("STATUS", "OK");
+                response.addString("MSG", "MODE_CHANGED");
+                response.addInt("VALUE", mode);
             }
             else
             {
-                response.addString("status", "error");
-                response.addString("msg", "invalid_mode");
+                response.addString("STATUS", "ERROR");
+                response.addString("MSG", "INVALID_MODE");
             }
         }
         // SREF command - Set shadow reference
         else if (strcmp(command, "SREF") == 0)
         {
             float ref;
-            if (Parser.getFloat("value", &ref) && ref >= -0.2 && ref <= 0.2)
+            if (Parser.getFloat("VALUE", &ref) && ref >= -0.2 && ref <= 0.2)
             {
                 PosRefShadow = ref;
-                response.addString("status", "ok");
-                response.addString("msg", "shadow_ref_set");
-                response.addFloat("value", ref, 6);
+                response.addString("STATUS", "OK");
+                response.addString("MSG", "SREF_SET");
+                response.addFloat("VALUE", ref, 6);
             }
             else
             {
-                response.addString("status", "error");
-                response.addString("msg", "ref_out_of_range");
+                response.addString("STATUS", "ERROR");
+                response.addString("MSG", "SREF_OUT_OF_RANGE");
             }
         }
         // AREF command - Apply reference
         else if (strcmp(command, "AREF") == 0)
         {
             ControlSetPosReference();
-            response.addString("status", "ok");
-            response.addString("msg", "reference_applied");
-            response.addFloat("value", ControllerFullLqr.GetReference(0), 6);
+            response.addString("STATUS", "OK");
+            response.addString("MSG", "REF_APPLIED");
+            response.addFloat("VALUE", ControlGetPosReference(), 6);
         }
         // Unknown command
         else
         {
-            response.addString("status", "error");
-            response.addString("msg", "unknown_command");
-            response.addString("cmd", command);
+            response.addString("STATUS", "ERROR");
+            response.addString("MSG", "UNKNOWN_COMMAND");
+            response.addString("CMD", command);
         }
     }
 
@@ -765,12 +827,12 @@ void UartSendInfo()
     JsonBuilder json(json_buffer, sizeof(json_buffer));
 
     json.startObject();
-    json.addString("type", "INFO");
-    json.addString("name", DEVICE_FW_NAME);
-    json.addString("version", DEVICE_FW_VERSION);
-    json.addString("author", DEVICE_FW_AUTHOR);
-    json.addString("date", __DATE__);
-    json.addString("time", __TIME__);
+    json.addString("TYPE", "INFO");
+    json.addString("NAME", DEVICE_FW_NAME);
+    json.addString("VERSION", DEVICE_FW_VERSION);
+    json.addString("AUTHOR", DEVICE_FW_AUTHOR);
+    json.addString("DATE", __DATE__);
+    json.addString("TIME", __TIME__);
     json.endObject();
 
     Serial.SendString(json.getBuffer());
@@ -783,49 +845,37 @@ void UartSendInfo()
 
 void UartSendStatus()
 {
-    static char json_buffer[512];
+    static char json_buffer[256];
     JsonBuilder json(json_buffer, sizeof(json_buffer));
 
     json.startObject();
 
     // Timestamp
-    json.addUInt("ts", SysTickCounter);
+    json.addUInt("TS", SysTickCounter);
 
     // Control mode
-    json.addInt("mode", (int32_t)ControlMode);
-
-    // Calibration status
-    json.addInt("cal_x_status", (int32_t)Cal.CartPos.Status);
-    json.addInt("cal_t_status", (int32_t)Cal.Theta.Status);
+    json.addInt("MODE", (int32_t)ControlMode);
 
     // Motor data
-    json.addFloat("mot_target_vel", Stepper.GetTargetVel(), 4);
-    json.addFloat("mot_current_vel", Stepper.GetCurrentVel(), 4);
-
-    float AccNow = 0;
-    if (Stepper.GetTargetVel() > Stepper.GetCurrentVel())
-        AccNow = Stepper.GetCurrentAcc();
-    else if (Stepper.GetTargetVel() < Stepper.GetCurrentVel())
-        AccNow = -Stepper.GetCurrentAcc();
-    json.addFloat("mot_acc", AccNow, 4);
-
-    json.addInt("mot_pwm", (Stepper.GetDir() == 1 ? Stepper.GetPwmFrequency() : -Stepper.GetPwmFrequency()));
+    json.addFloat("MTV", Stepper.GetTargetVel(), 4);
+    json.addFloat("MCV", Stepper.GetCurrentVel(), 4);
+    json.addInt("MPWM", (Stepper.GetDir() == 1 ? Stepper.GetPwmFrequency() : -Stepper.GetPwmFrequency()));
 
     // Cart data
-    json.addFloat("cart_pos", Cart.Pos, 6);
-    json.addFloat("cart_vel", Cart.Vel, 6);
-    json.addFloat("cart_pos_filt", CartFiltered.Pos, 6);
-    json.addFloat("cart_vel_filt", CartFiltered.Vel, 6);
+    json.addFloat("XP", CartRaw.Pos, 6);
+    json.addFloat("XV", CartRaw.Vel, 6);
+    json.addFloat("XPF", CartFiltered.Pos, 6);
+    json.addFloat("XVF", CartFiltered.Vel, 6);
 
     // Pendulum data
-    json.addFloat("pend_pos", Pendulum.Pos, 6);
-    json.addFloat("pend_vel", Pendulum.Vel, 6);
-    json.addFloat("pend_pos_filt", PendulumFiltered.Pos, 6);
-    json.addFloat("pend_vel_filt", PendulumFiltered.Vel, 6);
+    json.addFloat("PP", PendulumRaw.Pos, 6);
+    json.addFloat("PV", PendulumRaw.Vel, 6);
+    json.addFloat("PPF", PendulumFiltered.Pos, 6);
+    json.addFloat("PVF", PendulumFiltered.Vel, 6);
 
     // References
-    json.addFloat("ref_pos", ControllerFullLqr.GetReference(0), 6);
-    json.addFloat("ref_shadow", PosRefShadow, 6);
+    json.addFloat("RP", ControlGetPosReference(), 6);
+    json.addFloat("RS", PosRefShadow, 6);
 
     json.endObject();
 
@@ -929,10 +979,10 @@ void DeviceUpdateLcd()
             Display.WriteString("CART LEAD", LCD_FONT_SMALL, LCD_PIXEL_XOR);
         }
 
-        else if (ControlMode == CONTROL_CART_SF)
+        else if (ControlMode == CONTROL_CART_LQR)
         {
-            Display.Goto(0, 21);
-            Display.WriteString("CART SS", LCD_FONT_SMALL, LCD_PIXEL_XOR);
+            Display.Goto(0, 18);
+            Display.WriteString("CART LQR", LCD_FONT_SMALL, LCD_PIXEL_XOR);
         }
 
         else if (ControlMode == CONTROL_PEND_SF)
@@ -952,7 +1002,7 @@ void DeviceUpdateLcd()
 
         Display.Goto(2, 0);
         Display.WriteString("xR:", LCD_FONT_SMALL, LCD_PIXEL_ON);
-        NumberToWrite = ControllerFullLqr.GetReference(0);
+        NumberToWrite = ControlGetPosReference();
         if (NumberToWrite >= 0)
             Display.WriteChar(' ', LCD_FONT_SMALL, LCD_PIXEL_ON);
         Display.WriteFloat(NumberToWrite, 6, LCD_FONT_SMALL, LCD_PIXEL_ON);
@@ -961,7 +1011,7 @@ void DeviceUpdateLcd()
 
         Display.Goto(3, 0);
         Display.WriteString("xP:", LCD_FONT_SMALL, LCD_PIXEL_ON);
-        NumberToWrite = Cart.Pos;
+        NumberToWrite = CartFiltered.Pos;
         if (NumberToWrite >= 0)
             Display.WriteChar(' ', LCD_FONT_SMALL, LCD_PIXEL_ON);
         Display.WriteFloat(NumberToWrite, 6, LCD_FONT_SMALL, LCD_PIXEL_ON);
@@ -970,7 +1020,7 @@ void DeviceUpdateLcd()
 
         Display.Goto(4, 0);
         Display.WriteString("xV:", LCD_FONT_SMALL, LCD_PIXEL_ON);
-        NumberToWrite = Cart.Vel;
+        NumberToWrite = CartFiltered.Vel;
         if (NumberToWrite >= 0)
             Display.WriteChar(' ', LCD_FONT_SMALL, LCD_PIXEL_ON);
         Display.WriteFloat(NumberToWrite, 4, LCD_FONT_SMALL, LCD_PIXEL_ON);
@@ -979,7 +1029,7 @@ void DeviceUpdateLcd()
 
         Display.Goto(5, 0);
         Display.WriteString("tP:", LCD_FONT_SMALL, LCD_PIXEL_ON);
-        NumberToWrite = Pendulum.Pos;
+        NumberToWrite = PendulumFiltered.Pos;
         if (NumberToWrite >= 0)
             Display.WriteChar(' ', LCD_FONT_SMALL, LCD_PIXEL_ON);
         Display.WriteFloat(NumberToWrite, 4, LCD_FONT_SMALL, LCD_PIXEL_ON);
@@ -992,7 +1042,7 @@ void DeviceUpdateLcd()
         Display.DrawLine(83, 11, 83, 15, LCD_PIXEL_ON);
 
         // Cart
-        uint8_t xP = (uint8_t)Aux::Map (Cart.Pos, -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
+        uint8_t xP = (uint8_t)Aux::Map (CartFiltered.Pos, -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
         Display.DrawFilledRectangle(xP - 2, 11, xP + 2, 15, LCD_PIXEL_ON);
 
         // Shadow reference mark
@@ -1001,7 +1051,7 @@ void DeviceUpdateLcd()
         Display.DrawPixel(xP, 13, LCD_PIXEL_OFF);
 
         // Reference mark
-        xP = (uint8_t)Aux::Map (ControllerFullLqr.GetReference(0), -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
+        xP = (uint8_t)Aux::Map (ControlGetPosReference(), -X_VALUE_ABS_M, X_VALUE_ABS_M, 0, (PCD8544_COLUMNS - 1));
         Display.DrawPixel(xP, 14, LCD_PIXEL_XOR);
         Display.DrawPixel(xP, 13, LCD_PIXEL_OFF);
     }
@@ -1017,13 +1067,13 @@ void DeviceUpdateLcd()
 void DeviceUpdateRgb()
 {
     // Calibration mode
-    if ((Cal.CartPos.Status == CAL_RUNNING) || (Cal.Theta.Status == CAL_RUNNING))
+    if (Cal.AnyRunning)
         Led.SetColor(RGB_RED, 0);
 
     // Run mode
     else
     {
-        if (Aux::FastFabs(ControllerFullLqr.GetReference(0) - Cart.Pos) < 0.001)
+        if (Aux::FastFabs(ControlGetPosReference() - CartFiltered.Pos) < 0.001)
             Led.SetColor(RGB_GREEN, 50);
         else
             Led.SetColor(RGB_YELLOW, 50);
@@ -1131,85 +1181,85 @@ void DeviceUpdateButton2 ()
 // Control loop
 // ------------------------------------------------------------------------------------------------------- //
 
-// ------------------------------------------------------------------------------------------------------- //
-// Control loop
-// ------------------------------------------------------------------------------------------------------- //
-
 void DeviceUpdateControl()
 {
+    // Counter to detect when the system has been stopped for too long
     static uint16_t StoppedCounter = 0;
 
-    // Control is on
+    // Number of control loop iterations equivalent to 1 second
+    static const uint16_t STOP_THRESHOLD = 1000 / CONTROL_LOOP_FREQUENCY;
+
+    float Unow = 0.0f;    // Current control output
+    bool CanMove = false; // Indicates whether the actuator should move
+
+    // Only process control if the mode is not OFF
     if (ControlMode != CONTROL_OFF)
     {
-        float Unow = 0;
-        bool CanMove = false;
-
-        // Cart PID controller
-        if (ControlMode == CONTROL_CART_PID)
-            Unow = ControllerCartPid.Compute(CartFiltered.Pos);
-
-        // Cart Lead controller
-        else if (ControlMode == CONTROL_CART_LEAD)
-            Unow = ControllerCartLead.Compute(CartFiltered.Pos);
-
-        // Cart State feedback controller
-        else if (ControlMode == CONTROL_CART_SF)
+        // Switch statement is faster than multiple if-else chains
+        switch (ControlMode)
         {
-            ControllerCartSF.SetState(0, CartFiltered.Pos);
-            ControllerCartSF.SetState(1, CartFiltered.Vel);
-            Unow = ControllerCartSF.Compute();
+            // Cart position PID controller
+            case CONTROL_CART_PID:
+                Unow = ControllerCartPid.Compute(CartFiltered.Pos);
+                CanMove = (Aux::FastFabs(Unow) >= Stepper.GetMinVel());
+                break;
+
+            // Cart position lead controller
+            case CONTROL_CART_LEAD:
+                Unow = ControllerCartLead.Compute(CartFiltered.Pos);
+                CanMove = (Aux::FastFabs(Unow) >= Stepper.GetMinVel());
+                break;
+
+            // State-feedback controller for cart only
+            case CONTROL_CART_LQR:
+                ControllerCartLqr.SetState(0, CartFiltered.Pos);
+                ControllerCartLqr.SetState(1, CartFiltered.Vel);
+                Unow = ControllerCartLqr.Compute();
+                CanMove = (Aux::FastFabs(Unow) >= Stepper.GetMinVel());
+                break;
+
+            // State-feedback controller for pendulum
+            case CONTROL_PEND_SF:
+                ControllerPendSF.SetState(0, PendulumFiltered.Pos);
+                ControllerPendSF.SetState(1, PendulumFiltered.Vel);
+                Unow = ControllerPendSF.Compute();
+                CanMove = (Cal.Theta.Status == CAL_DONE)             // Only if calibration done
+                          && (Aux::FastFabs(PendulumFiltered.Pos) < 0.1f)   // Pendulum near upright
+                          && (Aux::FastFabs(Unow) >= Stepper.GetMinVel());
+                break;
+
+            // State-feedback controller for cart and pendulum states
+            case CONTROL_FULL_LQR:
+                ControllerCartPendLqr.SetState(0, CartFiltered.Pos);
+                ControllerCartPendLqr.SetState(1, CartFiltered.Vel);
+                ControllerCartPendLqr.SetState(2, PendulumFiltered.Pos);
+                ControllerCartPendLqr.SetState(3, PendulumFiltered.Vel);
+                Unow = ControllerCartPendLqr.Compute();
+                CanMove = (Cal.Theta.Status == CAL_DONE)             // Calibration must be completed
+                          && (Aux::FastFabs(PendulumFiltered.Pos) < 0.1f)   // Pendulum within ±0.1 rad
+                          && (Aux::FastFabs(Unow) >= Stepper.GetMinVel());
+                break;
+
+            // Unknown or disabled control mode
+            default:
+                CanMove = false;
+                break;
         }
 
-        // Pendulum State feedback controller
-        else if (ControlMode == CONTROL_PEND_SF)
-        {
-            ControllerPendSF.SetState(0, PendulumFiltered.Pos);
-            ControllerPendSF.SetState(1, PendulumFiltered.Vel);
-            Unow = ControllerPendSF.Compute();
-        }
-
-        // Full LQR controller
-        else if (ControlMode == CONTROL_FULL_LQR)
-        {
-            ControllerFullLqr.SetState(0, CartFiltered.Pos);
-            ControllerFullLqr.SetState(1, CartFiltered.Vel);
-            ControllerFullLqr.SetState(2, PendulumFiltered.Pos);
-            ControllerFullLqr.SetState(3, PendulumFiltered.Vel);
-            Unow = ControllerFullLqr.Compute();
-        }
-
-
-        // Check if can apply Unow
-        if ((ControlMode == CONTROL_PEND_SF) || (ControlMode == CONTROL_FULL_LQR))
-        {
-            // Pendulum related controllers
-            CanMove = (Cal.Theta.Status == CAL_DONE)
-                      && (Aux::FastFabs(Pendulum.Pos) < 0.1f)
-                      && (Aux::FastFabs(Unow) >= Stepper.GetMinVel());
-        }
-
-        // Other controllers
-        else
-            CanMove = (Aux::FastFabs(Unow) >= Stepper.GetMinVel());
-
-        // Apply control action
+        // Apply control action if movement is allowed
         if (CanMove)
         {
             Stepper.Move(Unow, STEPPER_ACC_MAX);
             StoppedCounter = 0;
+            return;
         }
-
-        else
-            StoppedCounter++;
     }
 
-    // Control is off
-    else
-        StoppedCounter++;
+    // If we reach this point: control is OFF or movement not allowed
+    StoppedCounter++;
 
-    // Cart is stopped for more than 1 second. Turn coils off to avoid heating
-    if ((StoppedCounter > (1000/CONTROL_LOOP_FREQUENCY)) && (Stepper.GetEnable()))
+    // Disable motor if it has been stopped for more than 1 second
+    if ((StoppedCounter > STOP_THRESHOLD) && Stepper.GetEnable())
     {
         Stepper.Stop();
         StoppedCounter = 0;
@@ -1224,9 +1274,18 @@ void ControlSetPosReference (void)
 {
     ControllerCartPid.SetReference(PosRefShadow);
     ControllerCartLead.SetReference(PosRefShadow);
-    ControllerCartSF.SetReference(0, PosRefShadow);
+    ControllerCartLqr.SetReference(0, PosRefShadow);
 
-    ControllerFullLqr.SetReference(0, PosRefShadow);
+    ControllerCartPendLqr.SetReference(0, PosRefShadow);
+}
+
+// ------------------------------------------------------------------------------------------------------- //
+// Get PosRef from controllers
+// ------------------------------------------------------------------------------------------------------- //
+
+float ControlGetPosReference (void)
+{
+    return ControllerCartPendLqr.GetReference(0);
 }
 
 // ------------------------------------------------------------------------------------------------------- //
@@ -1235,14 +1294,12 @@ void ControlSetPosReference (void)
 
 void IsrSysTick ()
 {
+    static uint32_t EncoderTCounter = 0;
+    static uint32_t EncoderXCounter = 0;
     static uint32_t ControlCounter = 0;
-    static uint32_t UartCounter = 0;
     static uint32_t LcdCounter = 0;
     static uint32_t RgbCounter = 0;
     static uint32_t ButtonCounter = 0;
-    static uint32_t EncoderTCounter = 0;
-    static uint32_t EncoderXCounter = 0;
-    static uint32_t CmdCounter = 0;
 
     // Pendulum state update
     if (++EncoderTCounter >= ENCODER_T_INTERVAL)
@@ -1257,7 +1314,7 @@ void IsrSysTick ()
         CartUpdateState();
 
         // Check for stalls - Done here because we need updated cart data
-        if (Stepper.CheckForStall(Cart.Vel, 0.1, ENCODER_X_FREQUENCY))
+        if (Stepper.CheckForStall(CartFiltered.Vel, 0.1, ENCODER_X_FREQUENCY))
             Stepper.Stop();
 
         EncoderXCounter = 0;
@@ -1268,20 +1325,6 @@ void IsrSysTick ()
     {
         DeviceUpdateControl();
         ControlCounter = 0;
-    }
-
-    // UART update
-    if ((++UartCounter >= UART_TX_INTERVAL) && ((Cal.CartPos.Status == CAL_DONE) && (Cal.Theta.Status == CAL_DONE)))
-    {
-        UartSendStatus();
-        UartCounter = 0;
-    }
-
-    // Check for UART commands
-    if ((++CmdCounter >= UART_TX_INTERVAL) && ((Cal.CartPos.Status == CAL_DONE) && (Cal.Theta.Status == CAL_DONE)))
-    {
-        UartProcessCommand();
-        CmdCounter = 0;
     }
 
     // LCD update
@@ -1406,7 +1449,7 @@ void main ()
     // --------------------------------------------------------------------------------------------------- //
 
     // Define lead gains, reference and limits
-    ControllerCartLead.SetGains(-0.0030615, 0.0108285255, -0.9948);
+    ControllerCartLead.SetGains(-0.11427, 0.569293140000000, -0.9323);
     ControllerCartLead.SetReference(0);
     ControllerCartLead.SetLimits(-STEPPER_VEL_MAX, STEPPER_VEL_MAX);
 
@@ -1415,12 +1458,12 @@ void main ()
     // --------------------------------------------------------------------------------------------------- //
 
     // Define state feedback gains and reference
-    float CartGains[2] = {4.426132, 0.050531};
-    float CartFFGains[2] = {4.426132, 0};
+    float CartGains[2] = {4.291716, 0.049396};
+    float CartFFGains[2] = {4.291716, 0};
     float CartRefs[2] = {0, 0};
 
-    // Initialize Cart State Feedback controller
-    ControllerCartSF.Init (CartGains, CartFFGains, CartRefs, 2, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
+    // Initialize state feedback controller
+    ControllerCartLqr.Init (CartGains, CartFFGains, CartRefs, 2, -STEPPER_VEL_MAX, STEPPER_VEL_MAX);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure pendulum state feedback controller
@@ -1431,20 +1474,20 @@ void main ()
     float PendFFGains[2] = {-67.631036, 0};
     float PendRefs[2] = {0, 0};
 
-    // Initialize Pend State Feedback controller
-    ControllerPendSF.Init (PendGains, PendFFGains, PendRefs, 2, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
+    // Initialize state feedback controller
+    ControllerPendSF.Init (PendGains, PendFFGains, PendRefs, 2, -STEPPER_VEL_MAX, STEPPER_VEL_MAX);
 
     // --------------------------------------------------------------------------------------------------- //
-    // Configure LQR controller
+    // Configure cart and pendulum state-feedback controller
     // --------------------------------------------------------------------------------------------------- //
 
-    // Define LQR gains and references
+    // Define state feedback gains and reference
     float CartPendGains[4] = {-0.097815, -2.024568, -4.826780, -1.102804};
     float CartPendFFGains[4] = {-0.097815, 0, 0, 0};
     float CartPendRefs[4] = {0};
 
-    // Initialize LQR controller
-    ControllerFullLqr.Init (CartPendGains, CartPendFFGains, CartPendRefs, 4, -STEPPER_ACC_MAX, STEPPER_ACC_MAX);
+    // Initialize state feedback controller
+    ControllerCartPendLqr.Init (CartPendGains, CartPendFFGains, CartPendRefs, 4, -STEPPER_VEL_MAX, STEPPER_VEL_MAX);
 
     // --------------------------------------------------------------------------------------------------- //
     // Configure Systick timer
@@ -1494,7 +1537,7 @@ void main ()
     // Start application state machine
     // --------------------------------------------------------------------------------------------------- //
 
-    // Start timer
+    // Start timer - Critical functions are handled here
     SysTickEnable ();
 
     // --------------------------------------------------------------------------------------------------- //
@@ -1504,55 +1547,45 @@ void main ()
     // Home cart
     CalibrationCartGoHome ();
 
-//    // Calibrate cart X position limits
-//    CalibrationCartPos ();
-//
-//    // Calibrate cart velocity constant - Must be called with the pendulum detached
-//    CalibrationCartVel();
-//
-//    // Calibrate motor velocity constant - Must be called with the pendulum detached
-//    CalibrationMotorVel();
-//
-//    // Go to x = 0 so pendulum has some momentum
-//    CalibrationCartGoPosition (0);
+    // Calibrate cart X position limits
+    CalibrationCartPos ();
+
+    // Calibrate cart velocity constant
+    CalibrationCartVel();
+
+    // Calibrate motor velocity constant
+    CalibrationMotorVel();
+
+    // Go to x = 0 so pendulum has some momentum
+    CalibrationCartGoPosition (0);
 
     // Calibrate pendulum angle
     CalibrationPendulumPos ();
 
     // --------------------------------------------------------------------------------------------------- //
-    // Main loop
+    // Main loop - Non critical functions
     // --------------------------------------------------------------------------------------------------- //
-
-
-    while (Start == 0);
 
     while (1)
     {
-        static float MoveVel = STEPPER_VEL_CAL;
+        static uint32_t LastUartTime = 0;
+        static uint32_t LastCmdTime = 0;
 
-        // Start stepper - Backwards direction
-        Stepper.Move (-MoveVel, STEPPER_ACC_MAX);
+        uint32_t CurrentTime = SysTickCounter;
 
-        while ((Cart.Pos > -0.075) && Stepper.GetEnable());
+        // UART update
+        if ((CurrentTime - LastUartTime) >= UART_TX_INTERVAL)
+        {
+            UartSendStatus();
+            LastUartTime = CurrentTime;
+        }
 
-        Stepper.Move (0, STEPPER_ACC_MAX);
-        while (Stepper.GetCurrentVel () != 0);
-
-        SysCtlDelay(10000000);
-
-        // Start stepper
-        Stepper.Move (MoveVel, STEPPER_ACC_MAX);
-
-        while ((Cart.Pos < 0.075) && Stepper.GetEnable());
-
-        Stepper.Move (0, STEPPER_ACC_MAX);
-        while (Stepper.GetCurrentVel () != 0);
-
-        SysCtlDelay(10000000);
-
-        MoveVel += 0.25;
-        if (MoveVel > 1)
-            MoveVel = STEPPER_VEL_CAL;
+        // Check for UART commands
+        if ((CurrentTime - LastCmdTime) >= UART_TX_INTERVAL)
+        {
+            UartProcessCommand();
+            LastCmdTime = CurrentTime;
+        }
     }
 }
 

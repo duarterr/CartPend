@@ -6,10 +6,10 @@ Supports sending JSON commands to the microcontroller.
 Starts with a graphical setup menu (Tkinter) for configuration.
 
 Message format:
-- JSON Status: {"ts":12345,"mode":2,"cart_pos":0.025,...}
-- JSON Info: {"type":"INFO","name":"...","version":"..."}
-- JSON Response: {"status":"ok","msg":"..."}
-- JSON Command: {"cmd":"MODE","value":5}
+- JSON Status: {"TS":12345,"MODE":2,"MTV":0.25,...}
+- JSON Info: {"TYPE":"INFO","NAME":"...","VERSION":"..."}
+- JSON Response: {"STATUS":"OK","MSG":"..."}
+- JSON Command: {"CMD":"MODE","VALUE":5}
 """
 
 import serial
@@ -182,7 +182,6 @@ class PendulumDataPlotter:
 
         self.target_vel = deque(maxlen=max_points)
         self.current_vel = deque(maxlen=max_points)
-        self.motor_acc = deque(maxlen=max_points)
         self.pwm_freq = deque(maxlen=max_points)
 
         self.cart_pos = deque(maxlen=max_points)
@@ -197,8 +196,6 @@ class PendulumDataPlotter:
 
         # Status data
         self.control_mode = 0
-        self.cal_x_status = 0
-        self.cal_t_status = 0
         self.ref_pos = 0.0
         self.shadow_ref = 0.0
 
@@ -211,13 +208,10 @@ class PendulumDataPlotter:
             0: "OFF",
             1: "CART_PID",
             2: "CART_LEAD",
-            3: "CART_SF",
+            3: "CART_LQR",
             4: "PEND_SF",
             5: "FULL_LQR",
         }
-
-        # Calibration status mapping
-        self.cal_status_map = {0: "Not Done", 1: "Running", 2: "Done"}
 
         # Start time reference
         self.start_time = None
@@ -266,7 +260,6 @@ class PendulumDataPlotter:
         self.real_time.clear()
         self.target_vel.clear()
         self.current_vel.clear()
-        self.motor_acc.clear()
         self.pwm_freq.clear()
         self.cart_pos.clear()
         self.cart_vel.clear()
@@ -304,7 +297,7 @@ class PendulumDataPlotter:
 
         for i, (ax, title, color) in enumerate(zip(self.axes, titles, colors)):
             ax.set_title(title, fontsize=10)
-            ax.set_xlabel("Time (s)" if i == 4 else "")
+            ax.set_xlabel("Time (s)" if i == len(self.axes) - 1 else "")
             ax.grid(True, alpha=0.3)
             (line,) = ax.plot(
                 [],
@@ -395,11 +388,11 @@ class PendulumDataPlotter:
         self.control_ax.set_ylim(0, 1)
 
         # Title
-        y_pos = 0.98
+        y_pos = 1
         self.control_ax.text(
             0.5,
             y_pos,
-            "CONTROL",
+            "DEVICE STATUS",
             ha="center",
             va="top",
             fontsize=13,
@@ -408,17 +401,6 @@ class PendulumDataPlotter:
         )
 
         # Status section
-        y_pos -= 0.06
-        self.control_ax.text(
-            0.5,
-            y_pos,
-            "━━━━━━━━━━━━━━",
-            ha="center",
-            va="top",
-            fontsize=10,
-            transform=self.control_ax.transAxes,
-        )
-
         y_pos -= 0.05
         self.status_text = self.control_ax.text(
             0.5,
@@ -426,18 +408,21 @@ class PendulumDataPlotter:
             "",
             ha="center",
             va="top",
-            fontsize=8,
+            fontsize=10,
             family="monospace",
             transform=self.control_ax.transAxes,
         )
 
+        # Buttons dimmensions
+        button_height = 0.048
+        button_spacing = 0.055
+
         # Reset Data button
-        y_pos = 0.68
-        reset_height = 0.05
+        y_pos = 0.8
         reset_rect = plt.Rectangle(
-            (0.05, y_pos - reset_height),
+            (0.05, y_pos - button_height),
             0.9,
-            reset_height,
+            button_height,
             facecolor="lightcoral",
             edgecolor="darkred",
             linewidth=2,
@@ -447,27 +432,26 @@ class PendulumDataPlotter:
         self.control_ax.add_patch(reset_rect)
         self.control_ax.text(
             0.5,
-            y_pos - reset_height / 2,
+            y_pos - button_height / 2,
             "RESET DATA",
             ha="center",
             va="center",
-            fontsize=9,
+            fontsize=10,
             fontweight="bold",
             transform=self.control_ax.transAxes,
         )
         self.reset_button = {
             "rect": reset_rect,
-            "y_min": y_pos - reset_height,
+            "y_min": y_pos - button_height,
             "y_max": y_pos,
         }
 
         # Save CSV button
-        y_pos -= 0.06
-        save_height = 0.05
+        y_pos -= button_spacing
         save_rect = plt.Rectangle(
-            (0.05, y_pos - save_height),
+            (0.05, y_pos - button_height),
             0.9,
-            save_height,
+            button_height,
             facecolor="lightskyblue",
             edgecolor="darkblue",
             linewidth=2,
@@ -477,36 +461,32 @@ class PendulumDataPlotter:
         self.control_ax.add_patch(save_rect)
         self.control_ax.text(
             0.5,
-            y_pos - save_height / 2,
+            y_pos - button_height / 2,
             "SAVE CSV",
             ha="center",
             va="center",
-            fontsize=9,
+            fontsize=10,
             fontweight="bold",
             transform=self.control_ax.transAxes,
         )
         self.save_button = {
             "rect": save_rect,
-            "y_min": y_pos - save_height,
+            "y_min": y_pos - button_height,
             "y_max": y_pos,
         }
 
         # Mode buttons section
-        y_pos = 0.54
+        y_pos -= 0.1
         self.control_ax.text(
             0.5,
             y_pos,
-            "MODES",
+            "CONTROL MODES",
             ha="center",
             va="top",
-            fontsize=10,
+            fontsize=13,
             fontweight="bold",
             transform=self.control_ax.transAxes,
         )
-
-        y_pos -= 0.03
-        button_height = 0.048
-        button_spacing = 0.055
 
         # Generate mode list dynamically
         modes = [
@@ -533,7 +513,8 @@ class PendulumDataPlotter:
                 mode_name,
                 ha="center",
                 va="center",
-                fontsize=7,
+                fontsize=10,
+                fontweight="bold",
                 transform=self.control_ax.transAxes,
             )
             self.mode_buttons[mode_id] = {
@@ -543,14 +524,14 @@ class PendulumDataPlotter:
             }
 
         # Reference control section with slider
-        y_pos -= 0.06
+        y_pos -= 0.1
         self.control_ax.text(
             0.5,
             y_pos,
-            "REFERENCE",
+            "POSITION REFERENCE",
             ha="center",
             va="top",
-            fontsize=10,
+            fontsize=13,
             fontweight="bold",
             transform=self.control_ax.transAxes,
         )
@@ -594,7 +575,7 @@ class PendulumDataPlotter:
             "-0.2",
             ha="left",
             va="top",
-            fontsize=6,
+            fontsize=8,
             transform=self.control_ax.transAxes,
         )
         self.control_ax.text(
@@ -603,7 +584,7 @@ class PendulumDataPlotter:
             "0.2",
             ha="right",
             va="top",
-            fontsize=6,
+            fontsize=8,
             transform=self.control_ax.transAxes,
         )
 
@@ -629,6 +610,19 @@ class PendulumDataPlotter:
             "y_max": y_pos,
         }
 
+        # Reference value display
+        y_pos -= 0.06
+        self.ref_value_text = self.control_ax.text(
+            0.5,
+            y_pos,
+            "",
+            ha="center",
+            va="top",
+            fontsize=10,
+            fontweight="bold",
+            transform=self.control_ax.transAxes,
+        )
+
         # Apply button
         y_pos -= 0.06
         apply_height = 0.05
@@ -646,10 +640,10 @@ class PendulumDataPlotter:
         self.control_ax.text(
             0.5,
             y_pos - apply_height / 2,
-            "✓ APPLY REFERENCE",
+            "APPLY REFERENCE",
             ha="center",
             va="center",
-            fontsize=9,
+            fontsize=10,
             fontweight="bold",
             transform=self.control_ax.transAxes,
         )
@@ -658,19 +652,6 @@ class PendulumDataPlotter:
             "y_min": y_pos - apply_height,
             "y_max": y_pos,
         }
-
-        # Reference value display
-        y_pos -= 0.06
-        self.ref_value_text = self.control_ax.text(
-            0.5,
-            y_pos,
-            "",
-            ha="center",
-            va="top",
-            fontsize=9,
-            fontweight="bold",
-            transform=self.control_ax.transAxes,
-        )
 
     def store_button_positions(self):
         """Store button positions after setup for click detection"""
@@ -730,6 +711,9 @@ class PendulumDataPlotter:
                 # Clamp to range
                 ref_value = max(-0.2, min(0.2, ref_value))
 
+                # Limit to 3 decimal places
+                ref_value = round(ref_value, 3)
+
                 # Send JSON command
                 self.send_json_command("SREF", ref_value)
                 print(f"Sent JSON: SREF={ref_value:.3f}")
@@ -748,31 +732,26 @@ class PendulumDataPlotter:
         if self.serial_port and self.serial_port.is_open:
             try:
                 # Build JSON command
-                command = {"cmd": cmd}
+                command = {"CMD": cmd}
                 if value is not None:
-                    command["value"] = value
+                    command["VALUE"] = value
 
                 # Convert to JSON string and send
                 json_str = json.dumps(command)
                 self.serial_port.write((json_str + "\n").encode("utf-8"))
-                print(f"→ {json_str}")
             except Exception as e:
                 print(f"Error sending command: {e}")
 
     def update_status_display(self):
         """Update status text in control panel"""
-        cal_x_str = self.cal_status_map.get(self.cal_x_status, "Unknown")
-        cal_t_str = self.cal_status_map.get(self.cal_t_status, "Unknown")
         mode_str = self.control_modes.get(self.control_mode, "?")
 
         status = f"""Device: {self.device_name}
 Version: {self.device_version}
 
 Mode: {mode_str}
-Cal X: {cal_x_str}
-Cal T: {cal_t_str}
 
-Active: {self.ref_pos:+.3f}m
+Reference: {self.ref_pos:+.3f}m
 """
         self.status_text.set_text(status)
 
@@ -902,84 +881,78 @@ Active: {self.ref_pos:+.3f}m
             data = json.loads(line)
 
             # Check message type
-            if "type" in data:
+            if "TYPE" in data:
                 # INFO message
-                if data["type"] == "INFO":
-                    self.device_name = data.get("name", "Unknown")
-                    self.device_version = data.get("version", "Unknown")
-                    print(f"ℹ INFO: {data.get('name')} v{data.get('version')}")
-                    print(f"  Author: {data.get('author', 'Unknown')}")
+                if data["TYPE"] == "INFO":
+                    self.device_name = data.get("NAME", "Unknown")
+                    self.device_version = data.get("VERSION", "Unknown")
+                    print(f"INFO: {data.get('NAME')} v{data.get('VERSION')}")
+                    print(f"  Author: {data.get('AUTHOR', 'Unknown')}")
                     print(
-                        f"  Date: {data.get('date', 'Unknown')} {data.get('time', '')}"
+                        f"  Date: {data.get('DATE', 'Unknown')} {data.get('TIME', '')}"
                     )
 
-            elif "status" in data:
+            elif "STATUS" in data:
                 # RESPONSE message
-                status = data.get("status", "unknown")
-                msg = data.get("msg", "")
-                if status == "ok":
-                    print(f"✓ {msg}")
+                status = data.get("STATUS", "unknown")
+                msg = data.get("MSG", "")
+                if status == "OK":
+                    print(f"Received OK: {msg}")
                 else:
-                    print(f"✗ ERROR: {msg}")
-                    if "value" in data:
+                    print(f"Received ERROR: {msg}")
+                    if "VALUE" in data:
                         print(f"  Value: {data['value']}")
 
-            elif "ts" in data:
+            elif "TS" in data:
                 # STATUS message
                 self.parse_status_data(data)
 
             else:
                 # Unknown JSON format
-                print(f"⚠ Unknown JSON: {line}")
+                print(f"Received Unknown JSON: {line}")
 
         except json.JSONDecodeError as e:
             # Not valid JSON
-            print(f"⚠ Invalid JSON: {line}")
+            print(f"Received Invalid JSON: {line}")
             print(f"  Error: {e}")
 
     def parse_status_data(self, data):
         """
-        Parse STATUS JSON data
-        Expected fields: ts, mode, cal_x_status, cal_t_status, mot_target_vel,
-                        mot_current_vel, mot_acc, mot_pwm, cart_pos, cart_vel,
-                        cart_pos_filt, cart_vel_filt, pend_pos, pend_vel,
-                        pend_pos_filt, pend_vel_filt, ref_pos, ref_shadow
+        Parse STATUS JSON data (compact key version)
+        Expected fields: TS, MODE, MTV, MCV, MPWM,
+                        XP, XV, XPF, XVF,
+                        PP, PV, PPF, PVF,
+                        RP, RS
         """
         try:
             current_time = time.time()
             if self.start_time is None:
                 self.start_time = current_time
 
-            # Extract all values with defaults
-            timestamp = data.get("ts", 0)
-            control_mode = data.get("mode", 0)
-            cal_x_status = data.get("cal_x_status", 0)
-            cal_t_status = data.get("cal_t_status", 0)
-            target_vel = data.get("mot_target_vel", 0.0)
-            current_vel = data.get("mot_current_vel", 0.0)
-            motor_acc = data.get("mot_acc", 0.0)
-            pwm_freq = data.get("mot_pwm", 0)
-            cart_pos = data.get("cart_pos", 0.0)
-            cart_vel = data.get("cart_vel", 0.0)
-            cart_pos_filt = data.get("cart_pos_filt", 0.0)
-            cart_vel_filt = data.get("cart_vel_filt", 0.0)
-            pendulum_pos = data.get("pend_pos", 0.0)
-            pendulum_vel = data.get("pend_vel", 0.0)
-            pendulum_pos_filt = data.get("pend_pos_filt", 0.0)
-            pendulum_vel_filt = data.get("pend_vel_filt", 0.0)
-            ref_pos = data.get("ref_pos", 0.0)
-            shadow_ref = data.get("ref_shadow", 0.0)
+            # Extract all values with new compact keys
+            timestamp = data.get("TS", 0)
+            control_mode = data.get("MODE", 0)
+            target_vel = data.get("MTV", 0.0)
+            current_vel = data.get("MCV", 0.0)
+            pwm_freq = data.get("MPWM", 0)
+            cart_pos = data.get("XP", 0.0)
+            cart_vel = data.get("XV", 0.0)
+            cart_pos_filt = data.get("XPF", 0.0)
+            cart_vel_filt = data.get("XVF", 0.0)
+            pendulum_pos = data.get("PP", 0.0)
+            pendulum_vel = data.get("PV", 0.0)
+            pendulum_pos_filt = data.get("PPF", 0.0)
+            pendulum_vel_filt = data.get("PVF", 0.0)
+            ref_pos = data.get("RP", 0.0)
+            shadow_ref = data.get("RS", 0.0)
 
             # Create data dict for plotting
             plot_data = {
                 "timestamp": timestamp,
                 "real_time": current_time - self.start_time,
                 "control_mode": control_mode,
-                "cal_x_status": cal_x_status,
-                "cal_t_status": cal_t_status,
                 "target_vel": target_vel,
                 "current_vel": current_vel,
-                "motor_acc": motor_acc,
                 "pwm_freq": pwm_freq,
                 "cart_pos": cart_pos,
                 "cart_vel": cart_vel,
@@ -993,12 +966,10 @@ Active: {self.ref_pos:+.3f}m
                 "shadow_ref": shadow_ref,
             }
 
-            # Update status variables
-            self.control_mode = plot_data["control_mode"]
-            self.cal_x_status = plot_data["cal_x_status"]
-            self.cal_t_status = plot_data["cal_t_status"]
-            self.ref_pos = plot_data["ref_pos"]
-            self.shadow_ref = plot_data["shadow_ref"]
+            # Update main status variables
+            self.control_mode = control_mode
+            self.ref_pos = ref_pos
+            self.shadow_ref = shadow_ref
 
             # Add to queue for plotting
             self.data_queue.put(plot_data)
@@ -1016,7 +987,6 @@ Active: {self.ref_pos:+.3f}m
                 self.real_time.append(data["real_time"])
                 self.target_vel.append(data["target_vel"])
                 self.current_vel.append(data["current_vel"])
-                self.motor_acc.append(data["motor_acc"])
                 self.pwm_freq.append(data["pwm_freq"])
                 self.cart_pos.append(data["cart_pos"])
                 self.cart_vel.append(data["cart_vel"])

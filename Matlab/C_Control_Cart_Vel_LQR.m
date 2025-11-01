@@ -72,7 +72,7 @@ Dc = 0;
 %% CART MODEL - DISCRETE
 
 % Sample time
-Ts = 1/200;
+Ts = 1/50;
 
 % Discretization
 sys_c = ss(Ac, Bc, Cc, Dc);

@@ -11,29 +11,44 @@ Bode_Opt.FreqUnits = 'Hz';
 Bode_Opt.Grid = 'on';
 %Bode_Opt.PhaseWrapping = 'on';
 
-
-%% SYSTEM MODELS
-
-% Import data
-try
-    load('./Results/Model_Cart_Vel.mat');    
-catch
-    fprintf ("Cart data not found. Aborting \n\n");    
-    return;
-end
-
 %% SYSTEM CHARACTERISTICS
 
-fs = 200;       % Sampling frequency
+fs = 50;        % Sampling frequency
 Ts = 1/fs;      % Sampling period
 
 s = zpk('s');
 z = zpk('z', Ts);
 
-%% SYSTEM MODEL
+%% CART NON LINEAR MODEL
 
-% Gp (s domain)
-Gps = GPosVel;
+% Import data
+try
+    load('./Results/Cart.mat');    
+catch
+    fprintf ("Cart data not found. Aborting \n\n");    
+    return;
+end
+
+amax = Cart.Amax;
+Tr = Cart.Tr;
+Kv = Cart.Kv;
+Kp = Cart.Kp;
+
+%% CART MODEL
+
+% State-space representation
+Ac = [0,         Kp;
+      0,    -1/Tr];
+
+Bc = [0;
+      Kv/Tr];
+
+Cc = [1 0];
+Dc = 0;
+
+% % Gp (s domain) - TF Pos/VelCmd
+[num, den] = ss2tf(Ac, Bc, Cc, Dc);
+Gps = tf(num, den);
 
 % Gp(z) - z domain
 Gpz = c2d (Gps, Ts, 'zoh')
@@ -41,7 +56,7 @@ Gpz = c2d (Gps, Ts, 'zoh')
 %% CONTROLLER
 
 % Gc(z) - z domain
-Gcz = -0.0030615*(z - 3.537)/(z-0.9948);
+Gcz = -0.11427*(z - 4.982)/(z-0.9323);
 
 [num, den] = tfdata(Gcz, 'v');
 
@@ -69,7 +84,7 @@ lgd.Location = 'best';
 subplot(133);
 
 % Closed loop step response
-t = 0:Ts:10;
+t = 0:Ts:5;
 Ref = 0.1*ones(size(t));
 
 Gmfz_r2y = feedback (Gpz*Gcz,1);

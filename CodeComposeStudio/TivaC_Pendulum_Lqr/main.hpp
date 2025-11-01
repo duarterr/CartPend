@@ -150,7 +150,7 @@ const float CAL_KV_END_POSITIONS[] = {0.175, 0.15, 0.1}; // Positions to stop ca
 
 // Application timming
 #define TIMER_FREQUENCY         1000                   // Systick timer frequency in Hz
-#define CONTROL_LOOP_FREQUENCY  200                    // Control loop frequency in Hz
+#define CONTROL_LOOP_FREQUENCY  50                     // Control loop frequency in Hz
 
 // LCD
 #define LCD_REFRESH_FREQUENCY   10                     // LCD refresh frequency in Hz
@@ -163,18 +163,18 @@ const float CAL_KV_END_POSITIONS[] = {0.175, 0.15, 0.1}; // Positions to stop ca
 #define BUTTON_LONG_TIMEOUT     1000                   // Button long press timeout in ms
 
 // UART
-#define UART_TX_FREQUENCY       25                     // UART TX device status frequency
+#define UART_TX_FREQUENCY       50                     // UART TX device status frequency
 #define UART_RX_FREQUENCY       10                     // UART RX command pooling frequency
 #define UART_BAUD_RATE          115200                 // UART baud rate
 #define UART_MODE               (UART_CONFIG_PAR_NONE | UART_CONFIG_STOP_ONE | UART_CONFIG_WLEN_8) // UART mode configuration
 
 // Encoder - Theta
-#define ENCODER_T_FREQUENCY     200                    // Encoder scan frequency
+#define ENCODER_T_FREQUENCY     200                    // Encoder scan frequency (must be N times higher than CONTROL_LOOP_FREQUENCY)
 #define ENCODER_T_PPR           4000                   // Encoder maximum counter value
 #define ENCODER_T_CAL_CYCLES    10                     // Oscillations required for calibration
 
 // Encoder - X
-#define ENCODER_X_FREQUENCY     200                    // Encoder scan frequency
+#define ENCODER_X_FREQUENCY     200                    // Encoder scan frequency (must be N times higher than CONTROL_LOOP_FREQUENCY)
 #define ENCODER_X_MAX           40600                  // Encoder maximum counter value. Can be adjusted with calibration
 const float ENCODER_X_KV = 477.565938866364;           // Conversion factor between PPS and m/s. Can be adjusted with calibration
 
@@ -367,9 +367,9 @@ typedef enum
     CONTROL_OFF,            // No control
     CONTROL_CART_PID,       // Cart PID control
     CONTROL_CART_LEAD,      // Cart Lead control
-    CONTROL_CART_SF,        // Cart State Feedback control
+    CONTROL_CART_LQR,       // Cart State Feedback control - LQR
     CONTROL_PEND_SF,        // Pendulum State Feedback control
-    CONTROL_FULL_LQR,       // LQR control - Cart and pendulum
+    CONTROL_FULL_LQR,       // Cart and pendulum State Feedback control - LQR
     sizeof_control_mode_t   // Do not change.
 } control_mode_t;
 
